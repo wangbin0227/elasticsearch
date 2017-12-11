@@ -28,14 +28,30 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 
 import java.io.IOException;
 
-/**
- */
 public abstract class ClusterInfoRequest<Request extends ClusterInfoRequest<Request>> extends MasterNodeReadRequest<Request> implements IndicesRequest.Replaceable {
 
     private String[] indices = Strings.EMPTY_ARRAY;
     private String[] types = Strings.EMPTY_ARRAY;
 
     private IndicesOptions indicesOptions = IndicesOptions.strictExpandOpen();
+
+    public ClusterInfoRequest() {
+    }
+
+    public ClusterInfoRequest(StreamInput in) throws IOException {
+        super(in);
+        indices = in.readStringArray();
+        types = in.readStringArray();
+        indicesOptions = IndicesOptions.readIndicesOptions(in);
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        super.writeTo(out);
+        out.writeStringArray(indices);
+        out.writeStringArray(types);
+        indicesOptions.writeIndicesOptions(out);
+    }
 
     @Override
     @SuppressWarnings("unchecked")
@@ -72,17 +88,11 @@ public abstract class ClusterInfoRequest<Request extends ClusterInfoRequest<Requ
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
+        // TODO(talevy): once all ClusterInfoRequest objects are converted, remove this
         super.readFrom(in);
         indices = in.readStringArray();
         types = in.readStringArray();
         indicesOptions = IndicesOptions.readIndicesOptions(in);
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        super.writeTo(out);
-        out.writeStringArray(indices);
-        out.writeStringArray(types);
-        indicesOptions.writeIndicesOptions(out);
+        // throw new UnsupportedOperationException("usage of Streamable is to be replaced by Writeable");
     }
 }

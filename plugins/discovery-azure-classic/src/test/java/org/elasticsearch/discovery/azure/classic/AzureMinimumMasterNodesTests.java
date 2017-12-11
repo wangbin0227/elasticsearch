@@ -39,8 +39,8 @@ import static org.hamcrest.Matchers.nullValue;
 @ESIntegTestCase.ClusterScope(scope = ESIntegTestCase.Scope.SUITE,
         numDataNodes = 0,
         transportClientRatio = 0.0,
-        numClientNodes = 0)
-@AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch-cloud-azure/issues/89")
+        numClientNodes = 0,
+        autoMinMasterNodes = false)
 public class AzureMinimumMasterNodesTests extends AbstractAzureComputeServiceTestCase {
 
     public AzureMinimumMasterNodesTests() {

@@ -29,9 +29,6 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 
 import java.io.IOException;
 
-/**
- *
- */
 public class ClusterStateRequest extends MasterNodeReadRequest<ClusterStateRequest> implements IndicesRequest.Replaceable {
 
     private boolean routingTable = true;
@@ -43,6 +40,29 @@ public class ClusterStateRequest extends MasterNodeReadRequest<ClusterStateReque
     private IndicesOptions indicesOptions = IndicesOptions.lenientExpandOpen();
 
     public ClusterStateRequest() {
+    }
+
+    public ClusterStateRequest(StreamInput in) throws IOException {
+        super(in);
+        routingTable = in.readBoolean();
+        nodes = in.readBoolean();
+        metaData = in.readBoolean();
+        blocks = in.readBoolean();
+        customs = in.readBoolean();
+        indices = in.readStringArray();
+        indicesOptions = IndicesOptions.readIndicesOptions(in);
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        super.writeTo(out);
+        out.writeBoolean(routingTable);
+        out.writeBoolean(nodes);
+        out.writeBoolean(metaData);
+        out.writeBoolean(blocks);
+        out.writeBoolean(customs);
+        out.writeStringArray(indices);
+        indicesOptions.writeIndicesOptions(out);
     }
 
     @Override
@@ -138,25 +158,6 @@ public class ClusterStateRequest extends MasterNodeReadRequest<ClusterStateReque
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        super.readFrom(in);
-        routingTable = in.readBoolean();
-        nodes = in.readBoolean();
-        metaData = in.readBoolean();
-        blocks = in.readBoolean();
-        customs = in.readBoolean();
-        indices = in.readStringArray();
-        indicesOptions = IndicesOptions.readIndicesOptions(in);
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        super.writeTo(out);
-        out.writeBoolean(routingTable);
-        out.writeBoolean(nodes);
-        out.writeBoolean(metaData);
-        out.writeBoolean(blocks);
-        out.writeBoolean(customs);
-        out.writeStringArray(indices);
-        indicesOptions.writeIndicesOptions(out);
+        throw new UnsupportedOperationException("usage of Streamable is to be replaced by Writeable");
     }
 }

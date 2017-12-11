@@ -19,50 +19,46 @@
 
 package org.elasticsearch.rest.action.search;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.function.BiConsumer;
-
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.action.search.MultiSearchRequest;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.node.NodeClient;
-import org.elasticsearch.common.ParseFieldMatcher;
+import org.elasticsearch.common.CheckedBiConsumer;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
-import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContent;
-import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.query.QueryParseContext;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
-import      org.elasticsearch.rest.RestRequest;
-import org.elasticsearch.rest.action.RestActions;
+import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.RestToXContentListener;
-import org.elasticsearch.search.SearchRequestParsers;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 
-import static org.elasticsearch.common.xcontent.support.XContentMapValues.lenientNodeBooleanValue;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+
+import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeBooleanValue;
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeStringArrayValue;
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeStringValue;
 import static org.elasticsearch.rest.RestRequest.Method.GET;
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 
-/**
- */
 public class RestMultiSearchAction extends BaseRestHandler {
 
-    private final boolean allowExplicitIndex;
-    private final SearchRequestParsers searchRequestParsers;
+    private static final Set<String> RESPONSE_PARAMS = Collections.singleton(RestSearchAction.TYPED_KEYS_PARAM);
 
-    @Inject
-    public RestMultiSearchAction(Settings settings, RestController controller, SearchRequestParsers searchRequestParsers) {
+    private final boolean allowExplicitIndex;
+
+    public RestMultiSearchAction(Settings settings, RestController controller) {
         super(settings);
-        this.searchRequestParsers = searchRequestParsers;
 
         controller.registerHandler(GET, "/_msearch", this);
         controller.registerHandler(POST, "/_msearch", this);
@@ -75,133 +71,66 @@ public class RestMultiSearchAction extends BaseRestHandler {
     }
 
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) throws Exception {
-        MultiSearchRequest multiSearchRequest = parseRequest(request, allowExplicitIndex, searchRequestParsers, parseFieldMatcher);
-        client.multiSearch(multiSearchRequest, new RestToXContentListener<>(channel));
+    public String getName() {
+        return "msearch_action";
+    }
+
+    @Override
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
+        MultiSearchRequest multiSearchRequest = parseRequest(request, allowExplicitIndex);
+        return channel -> client.multiSearch(multiSearchRequest, new RestToXContentListener<>(channel));
     }
 
     /**
      * Parses a {@link RestRequest} body and returns a {@link MultiSearchRequest}
      */
-    public static MultiSearchRequest parseRequest(RestRequest restRequest, boolean allowExplicitIndex,
-                                                  SearchRequestParsers searchRequestParsers,
-                                                  ParseFieldMatcher parseFieldMatcher) throws IOException {
-
+    public static MultiSearchRequest parseRequest(RestRequest restRequest, boolean allowExplicitIndex) throws IOException {
         MultiSearchRequest multiRequest = new MultiSearchRequest();
         if (restRequest.hasParam("max_concurrent_searches")) {
             multiRequest.maxConcurrentSearchRequests(restRequest.paramAsInt("max_concurrent_searches", 0));
         }
 
-        parseMultiLineRequest(restRequest, multiRequest.indicesOptions(), allowExplicitIndex, (searchRequest, bytes) -> {
-            try (XContentParser requestParser = XContentFactory.xContent(bytes).createParser(bytes)) {
-                final QueryParseContext queryParseContext = new QueryParseContext(searchRequestParsers.queryParsers,
-                    requestParser, parseFieldMatcher);
-                searchRequest.source(SearchSourceBuilder.fromXContent(queryParseContext,
-                    searchRequestParsers.aggParsers, searchRequestParsers.suggesters));
-                multiRequest.add(searchRequest);
-            } catch (IOException e) {
-                throw new ElasticsearchParseException("Exception when parsing search request", e);
-            }
-        });
+        int preFilterShardSize = restRequest.paramAsInt("pre_filter_shard_size", SearchRequest.DEFAULT_PRE_FILTER_SHARD_SIZE);
 
+
+        parseMultiLineRequest(restRequest, multiRequest.indicesOptions(), allowExplicitIndex, (searchRequest, parser) -> {
+            searchRequest.source(SearchSourceBuilder.fromXContent(parser));
+            multiRequest.add(searchRequest);
+        });
+        List<SearchRequest> requests = multiRequest.requests();
+        preFilterShardSize = Math.max(1, preFilterShardSize / (requests.size()+1));
+        for (SearchRequest request : requests) {
+            // preserve if it's set on the request
+            request.setPreFilterShardSize(Math.min(preFilterShardSize, request.getPreFilterShardSize()));
+        }
         return multiRequest;
     }
 
     /**
-     * Parses a multi-line {@link RestRequest} body, instanciating a {@link SearchRequest} for each line and applying the given consumer.
+     * Parses a multi-line {@link RestRequest} body, instantiating a {@link SearchRequest} for each line and applying the given consumer.
      */
     public static void parseMultiLineRequest(RestRequest request, IndicesOptions indicesOptions, boolean allowExplicitIndex,
-                                             BiConsumer<SearchRequest, BytesReference> consumer) throws IOException {
+            CheckedBiConsumer<SearchRequest, XContentParser, IOException> consumer) throws IOException {
 
         String[] indices = Strings.splitStringByCommaToArray(request.param("index"));
         String[] types = Strings.splitStringByCommaToArray(request.param("type"));
         String searchType = request.param("search_type");
         String routing = request.param("routing");
 
-        final BytesReference data = RestActions.getRestContent(request);
-
-        XContent xContent = XContentFactory.xContent(data);
-        int from = 0;
-        int length = data.length();
-        byte marker = xContent.streamSeparator();
-        while (true) {
-            int nextMarker = findNextMarker(marker, from, data, length);
-            if (nextMarker == -1) {
-                break;
-            }
-            // support first line with \n
-            if (nextMarker == 0) {
-                from = nextMarker + 1;
-                continue;
-            }
-
-            SearchRequest searchRequest = new SearchRequest();
-            if (indices != null) {
-                searchRequest.indices(indices);
-            }
-            if (indicesOptions != null) {
-                searchRequest.indicesOptions(indicesOptions);
-            }
-            if (types != null && types.length > 0) {
-                searchRequest.types(types);
-            }
-            if (routing != null) {
-                searchRequest.routing(routing);
-            }
-            if (searchType != null) {
-                searchRequest.searchType(searchType);
-            }
-
-            IndicesOptions defaultOptions = IndicesOptions.strictExpandOpenAndForbidClosed();
-
-
-            // now parse the action
-            if (nextMarker - from > 0) {
-                try (XContentParser parser = xContent.createParser(data.slice(from, nextMarker - from))) {
-                    Map<String, Object> source = parser.map();
-                    for (Map.Entry<String, Object> entry : source.entrySet()) {
-                        Object value = entry.getValue();
-                        if ("index".equals(entry.getKey()) || "indices".equals(entry.getKey())) {
-                            if (!allowExplicitIndex) {
-                                throw new IllegalArgumentException("explicit index in multi search is not allowed");
-                            }
-                            searchRequest.indices(nodeStringArrayValue(value));
-                        } else if ("type".equals(entry.getKey()) || "types".equals(entry.getKey())) {
-                            searchRequest.types(nodeStringArrayValue(value));
-                        } else if ("search_type".equals(entry.getKey()) || "searchType".equals(entry.getKey())) {
-                            searchRequest.searchType(nodeStringValue(value, null));
-                        } else if ("request_cache".equals(entry.getKey()) || "requestCache".equals(entry.getKey())) {
-                            searchRequest.requestCache(lenientNodeBooleanValue(value));
-                        } else if ("preference".equals(entry.getKey())) {
-                            searchRequest.preference(nodeStringValue(value, null));
-                        } else if ("routing".equals(entry.getKey())) {
-                            searchRequest.routing(nodeStringValue(value, null));
-                        }
-                    }
-                    defaultOptions = IndicesOptions.fromMap(source, defaultOptions);
-                }
-            }
-            searchRequest.indicesOptions(defaultOptions);
-
-            // move pointers
-            from = nextMarker + 1;
-            // now for the body
-            nextMarker = findNextMarker(marker, from, data, length);
-            if (nextMarker == -1) {
-                break;
-            }
-            consumer.accept(searchRequest, data.slice(from, nextMarker - from));
-            // move pointers
-            from = nextMarker + 1;
-        }
+        final Tuple<XContentType, BytesReference> sourceTuple = request.contentOrSourceParam();
+        final XContent xContent = sourceTuple.v1().xContent();
+        final BytesReference data = sourceTuple.v2();
+        MultiSearchRequest.readMultiLineFormat(data, xContent, consumer, indices, indicesOptions, types, routing,
+                searchType, request.getXContentRegistry(), allowExplicitIndex);
     }
 
-    private static int findNextMarker(byte marker, int from, BytesReference data, int length) {
-        for (int i = from; i < length; i++) {
-            if (data.get(i) == marker) {
-                return i;
-            }
-        }
-        return -1;
+    @Override
+    public boolean supportsContentStream() {
+        return true;
+    }
+
+    @Override
+    protected Set<String> responseParams() {
+        return RESPONSE_PARAMS;
     }
 }

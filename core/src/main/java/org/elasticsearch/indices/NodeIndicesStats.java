@@ -26,7 +26,8 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContent.Params;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.cache.query.QueryCacheStats;
@@ -35,12 +36,12 @@ import org.elasticsearch.index.engine.SegmentsStats;
 import org.elasticsearch.index.fielddata.FieldDataStats;
 import org.elasticsearch.index.flush.FlushStats;
 import org.elasticsearch.index.get.GetStats;
-import org.elasticsearch.index.shard.IndexingStats;
 import org.elasticsearch.index.merge.MergeStats;
 import org.elasticsearch.index.recovery.RecoveryStats;
 import org.elasticsearch.index.refresh.RefreshStats;
 import org.elasticsearch.index.search.stats.SearchStats;
 import org.elasticsearch.index.shard.DocsStats;
+import org.elasticsearch.index.shard.IndexingStats;
 import org.elasticsearch.index.store.StoreStats;
 import org.elasticsearch.search.suggest.completion.CompletionStats;
 
@@ -53,7 +54,7 @@ import java.util.Map;
 /**
  * Global information on indices stats running on a specific node.
  */
-public class NodeIndicesStats implements Streamable, ToXContent {
+public class NodeIndicesStats implements Streamable, ToXContentFragment {
 
     private CommonStats stats;
     private Map<Index, List<IndexShardStats>> statsByShard;
@@ -154,7 +155,7 @@ public class NodeIndicesStats implements Streamable, ToXContent {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        stats = CommonStats.readCommonStats(in);
+        stats = new CommonStats(in);
         if (in.readBoolean()) {
             int entries = in.readVInt();
             statsByShard = new HashMap<>();
@@ -188,10 +189,11 @@ public class NodeIndicesStats implements Streamable, ToXContent {
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        String level = params.param("level", "node");
-        boolean isLevelValid = "node".equalsIgnoreCase(level) || "indices".equalsIgnoreCase(level) || "shards".equalsIgnoreCase(level);
+        final String level = params.param("level", "node");
+        final boolean isLevelValid =
+            "indices".equalsIgnoreCase(level) || "node".equalsIgnoreCase(level) || "shards".equalsIgnoreCase(level);
         if (!isLevelValid) {
-            return builder;
+            throw new IllegalArgumentException("level parameter must be one of [indices] or [node] or [shards] but was [" + level + "]");
         }
 
         // "node" level

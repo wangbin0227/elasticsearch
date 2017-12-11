@@ -23,18 +23,13 @@ import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.GenericAction;
 import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.client.node.NodeClient;
-import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.indices.query.IndicesQueriesRegistry;
 import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.BytesRestResponse;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.RestStatus;
-import org.elasticsearch.search.SearchRequestParsers;
-import org.elasticsearch.search.aggregations.AggregatorParsers;
-import org.elasticsearch.search.suggest.Suggesters;
+import org.elasticsearch.search.aggregations.AggregationBuilder;
 import org.elasticsearch.tasks.LoggingTaskListener;
 import org.elasticsearch.tasks.Task;
 
@@ -44,23 +39,18 @@ import java.util.Map;
 
 public abstract class AbstractBaseReindexRestHandler<
                 Request extends AbstractBulkByScrollRequest<Request>,
-                A extends GenericAction<Request, BulkIndexByScrollResponse>
+                A extends GenericAction<Request, BulkByScrollResponse>
             > extends BaseRestHandler {
 
-    protected final SearchRequestParsers searchRequestParsers;
-    private final ClusterService clusterService;
     private final A action;
 
-    protected AbstractBaseReindexRestHandler(Settings settings, SearchRequestParsers searchRequestParsers,
-                                             ClusterService clusterService, A action) {
+    protected AbstractBaseReindexRestHandler(Settings settings, A action) {
         super(settings);
-        this.searchRequestParsers = searchRequestParsers;
-        this.clusterService = clusterService;
         this.action = action;
     }
 
-    protected void handleRequest(RestRequest request, RestChannel channel, NodeClient client,
-                                 boolean includeCreated, boolean includeUpdated) throws IOException {
+    protected RestChannelConsumer doPrepareRequest(RestRequest request, NodeClient client,
+                                                   boolean includeCreated, boolean includeUpdated) throws IOException {
         // Build the internal request
         Request internal = setCommonOptions(request, buildRequest(request));
 
@@ -70,8 +60,7 @@ public abstract class AbstractBaseReindexRestHandler<
             params.put(BulkByScrollTask.Status.INCLUDE_CREATED, Boolean.toString(includeCreated));
             params.put(BulkByScrollTask.Status.INCLUDE_UPDATED, Boolean.toString(includeUpdated));
 
-            client.executeLocally(action, internal, new BulkIndexByScrollResponseContentListener(channel, params));
-            return;
+            return channel -> client.executeLocally(action, internal, new BulkIndexByScrollResponseContentListener(channel, params));
         } else {
             internal.setShouldStoreResult(true);
         }
@@ -83,10 +72,9 @@ public abstract class AbstractBaseReindexRestHandler<
          */
         ActionRequestValidationException validationException = internal.validate();
         if (validationException != null) {
-            channel.sendResponse(new BytesRestResponse(channel, validationException));
-            return;
+            throw validationException;
         }
-        sendTask(channel, client.executeLocally(action, internal, LoggingTaskListener.instance()));
+        return sendTask(client.getLocalNodeId(), client.executeLocally(action, internal, LoggingTaskListener.instance()));
     }
 
     /**
@@ -104,6 +92,11 @@ public abstract class AbstractBaseReindexRestHandler<
         request.setRefresh(restRequest.paramAsBoolean("refresh", request.isRefresh()));
         request.setTimeout(restRequest.paramAsTime("timeout", request.getTimeout()));
 
+        Integer slices = parseSlices(restRequest);
+        if (slices != null) {
+            request.setSlices(slices);
+        }
+
         String waitForActiveShards = restRequest.param("wait_for_active_shards");
         if (waitForActiveShards != null) {
             request.setWaitForActiveShards(ActiveShardCount.parseString(waitForActiveShards));
@@ -116,13 +109,41 @@ public abstract class AbstractBaseReindexRestHandler<
         return request;
     }
 
-    private void sendTask(RestChannel channel, Task task) throws IOException {
-        try (XContentBuilder builder = channel.newBuilder()) {
-            builder.startObject();
-            builder.field("task", clusterService.localNode().getId() + ":" + task.getId());
-            builder.endObject();
-            channel.sendResponse(new BytesRestResponse(RestStatus.OK, builder));
+    private RestChannelConsumer sendTask(String localNodeId, Task task) throws IOException {
+        return channel -> {
+            try (XContentBuilder builder = channel.newBuilder()) {
+                builder.startObject();
+                builder.field("task", localNodeId + ":" + task.getId());
+                builder.endObject();
+                channel.sendResponse(new BytesRestResponse(RestStatus.OK, builder));
+            }
+        };
+    }
+
+    private static Integer parseSlices(RestRequest request) {
+        String slicesString = request.param("slices");
+        if (slicesString == null) {
+            return null;
         }
+
+        if (slicesString.equals(AbstractBulkByScrollRequest.AUTO_SLICES_VALUE)) {
+            return AbstractBulkByScrollRequest.AUTO_SLICES;
+        }
+
+        int slices;
+        try {
+            slices = Integer.parseInt(slicesString);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                "[slices] must be a positive integer or the string \"auto\", but was [" + slicesString + "]", e);
+        }
+
+        if (slices < 1) {
+            throw new IllegalArgumentException(
+                "[slices] must be a positive integer or the string \"auto\", but was [" + slicesString + "]");
+        }
+
+        return slices;
     }
 
     /**

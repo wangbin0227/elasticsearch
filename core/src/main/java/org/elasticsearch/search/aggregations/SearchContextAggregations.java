@@ -18,7 +18,9 @@
  */
 package org.elasticsearch.search.aggregations;
 
-import org.elasticsearch.search.aggregations.support.AggregationContext;
+import java.util.function.IntConsumer;
+
+import static org.elasticsearch.search.aggregations.MultiBucketConsumerService.MultiBucketConsumer;
 
 /**
  * The aggregation context that is part of the search context.
@@ -26,14 +28,15 @@ import org.elasticsearch.search.aggregations.support.AggregationContext;
 public class SearchContextAggregations {
 
     private final AggregatorFactories factories;
+    private final MultiBucketConsumer multiBucketConsumer;
     private Aggregator[] aggregators;
-    private AggregationContext aggregationContext;
 
     /**
      * Creates a new aggregation context with the parsed aggregator factories
      */
-    public SearchContextAggregations(AggregatorFactories factories) {
+    public SearchContextAggregations(AggregatorFactories factories, MultiBucketConsumer multiBucketConsumer) {
         this.factories = factories;
+        this.multiBucketConsumer = multiBucketConsumer;
     }
 
     public AggregatorFactories factories() {
@@ -42,14 +45,6 @@ public class SearchContextAggregations {
 
     public Aggregator[] aggregators() {
         return aggregators;
-    }
-
-    public AggregationContext aggregationContext() {
-        return aggregationContext;
-    }
-
-    public void aggregationContext(AggregationContext aggregationContext) {
-        this.aggregationContext = aggregationContext;
     }
 
     /**
@@ -61,4 +56,15 @@ public class SearchContextAggregations {
         this.aggregators = aggregators;
     }
 
+    /**
+     * Returns a consumer for multi bucket aggregation that checks the total number of buckets
+     * created in the response
+     */
+    public IntConsumer multiBucketConsumer() {
+        return multiBucketConsumer;
+    }
+
+    void resetBucketMultiConsumer() {
+        multiBucketConsumer.reset();
+    }
 }

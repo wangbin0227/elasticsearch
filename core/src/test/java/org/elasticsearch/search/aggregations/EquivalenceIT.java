@@ -30,7 +30,7 @@ import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.script.MockScriptPlugin;
 import org.elasticsearch.script.Script;
-import org.elasticsearch.script.ScriptService.ScriptType;
+import org.elasticsearch.script.ScriptType;
 import org.elasticsearch.search.aggregations.Aggregator.SubAggCollectionMode;
 import org.elasticsearch.search.aggregations.bucket.filter.Filter;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
@@ -41,6 +41,8 @@ import org.elasticsearch.search.aggregations.bucket.terms.Terms;
 import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregatorFactory;
 import org.elasticsearch.search.aggregations.metrics.sum.Sum;
 import org.elasticsearch.test.ESIntegTestCase;
+import org.junit.After;
+import org.junit.Before;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -88,6 +90,21 @@ public class EquivalenceIT extends ESIntegTestCase {
                 return Math.floor(value / interval.doubleValue());
             });
         }
+    }
+
+    @Before
+    private void setupMaxBuckets() {
+        // disables the max bucket limit for this test
+        client().admin().cluster().prepareUpdateSettings()
+            .setTransientSettings(Collections.singletonMap("search.max_buckets", Integer.MAX_VALUE))
+            .get();
+    }
+
+    @After
+    private void cleanupMaxBuckets() {
+        client().admin().cluster().prepareUpdateSettings()
+            .setTransientSettings(Collections.singletonMap("search.max_buckets", null))
+            .get();
     }
 
     // Make sure that unordered, reversed, disjoint and/or overlapping ranges are supported
@@ -266,10 +283,6 @@ public class EquivalenceIT extends ESIntegTestCase {
                 .setIndicesOptions(IndicesOptions.lenientExpandOpen())
                 .execute().get());
 
-        TermsAggregatorFactory.ExecutionMode[] globalOrdinalModes = new TermsAggregatorFactory.ExecutionMode[] {
-                TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS_HASH, TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS
-        };
-
         SearchResponse resp = client().prepareSearch("idx")
                     .addAggregation(
                             terms("long")
@@ -294,14 +307,14 @@ public class EquivalenceIT extends ESIntegTestCase {
                             terms("string_global_ordinals")
                                     .field("string_values")
                                     .collectMode(randomFrom(SubAggCollectionMode.values()))
-                                    .executionHint(globalOrdinalModes[randomInt(globalOrdinalModes.length - 1)].toString())
+                                    .executionHint(TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS.toString())
                                     .size(maxNumTerms)
                                     .subAggregation(extendedStats("stats").field("num")))
                     .addAggregation(
                             terms("string_global_ordinals_doc_values")
                                     .field("string_values.doc_values")
                                     .collectMode(randomFrom(SubAggCollectionMode.values()))
-                                    .executionHint(globalOrdinalModes[randomInt(globalOrdinalModes.length - 1)].toString())
+                                    .executionHint(TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS.toString())
                                     .size(maxNumTerms)
                                     .subAggregation(extendedStats("stats").field("num")))
                 .execute().actionGet();
@@ -383,7 +396,7 @@ public class EquivalenceIT extends ESIntegTestCase {
                         terms("terms")
                                 .field("values")
                                 .collectMode(randomFrom(SubAggCollectionMode.values()))
-                                .script(new Script("floor(_value / interval)", ScriptType.INLINE, CustomScriptPlugin.NAME, params))
+                                .script(new Script(ScriptType.INLINE, CustomScriptPlugin.NAME, "floor(_value / interval)", params))
                                 .size(maxNumTerms))
                 .addAggregation(
                         histogram("histo")
@@ -485,10 +498,10 @@ public class EquivalenceIT extends ESIntegTestCase {
     }
 
     private void assertEquals(Terms t1, Terms t2) {
-        List<Terms.Bucket> t1Buckets = t1.getBuckets();
-        List<Terms.Bucket> t2Buckets = t1.getBuckets();
+        List<? extends Terms.Bucket> t1Buckets = t1.getBuckets();
+        List<? extends Terms.Bucket> t2Buckets = t1.getBuckets();
         assertEquals(t1Buckets.size(), t2Buckets.size());
-        for (Iterator<Terms.Bucket> it1 = t1Buckets.iterator(), it2 = t2Buckets.iterator(); it1.hasNext(); ) {
+        for (Iterator<? extends Terms.Bucket> it1 = t1Buckets.iterator(), it2 = t2Buckets.iterator(); it1.hasNext(); ) {
             final Terms.Bucket b1 = it1.next();
             final Terms.Bucket b2 = it2.next();
             assertEquals(b1.getDocCount(), b2.getDocCount());

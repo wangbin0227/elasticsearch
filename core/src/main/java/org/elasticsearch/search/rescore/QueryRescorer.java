@@ -21,15 +21,10 @@ package org.elasticsearch.search.rescore;
 
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Explanation;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
-import org.elasticsearch.common.ParseField;
-import org.elasticsearch.common.xcontent.ObjectParser;
-import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.query.QueryShardContext;
-import org.elasticsearch.search.internal.ContextIndexSearcher;
-import org.elasticsearch.search.internal.SearchContext;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -39,15 +34,9 @@ import java.util.Set;
 public final class QueryRescorer implements Rescorer {
 
     public static final Rescorer INSTANCE = new QueryRescorer();
-    public static final String NAME = "query";
 
     @Override
-    public String name() {
-        return NAME;
-    }
-
-    @Override
-    public TopDocs rescore(TopDocs topDocs, SearchContext context, RescoreSearchContext rescoreContext) throws IOException {
+    public TopDocs rescore(TopDocs topDocs, IndexSearcher searcher, RescoreContext rescoreContext) throws IOException {
 
         assert rescoreContext != null;
         if (topDocs == null || topDocs.totalHits == 0 || topDocs.scoreDocs.length == 0) {
@@ -70,20 +59,19 @@ public final class QueryRescorer implements Rescorer {
         };
 
         // First take top slice of incoming docs, to be rescored:
-        TopDocs topNFirstPass = topN(topDocs, rescoreContext.window());
+        TopDocs topNFirstPass = topN(topDocs, rescoreContext.getWindowSize());
 
         // Rescore them:
-        TopDocs rescored = rescorer.rescore(context.searcher(), topNFirstPass, rescoreContext.window());
+        TopDocs rescored = rescorer.rescore(searcher, topNFirstPass, rescoreContext.getWindowSize());
 
         // Splice back to non-topN hits and resort all of them:
         return combine(topDocs, rescored, (QueryRescoreContext) rescoreContext);
     }
 
     @Override
-    public Explanation explain(int topLevelDocId, SearchContext context, RescoreSearchContext rescoreContext,
+    public Explanation explain(int topLevelDocId, IndexSearcher searcher, RescoreContext rescoreContext,
                                Explanation sourceExplanation) throws IOException {
         QueryRescoreContext rescore = (QueryRescoreContext) rescoreContext;
-        ContextIndexSearcher searcher = context.searcher();
         if (sourceExplanation == null) {
             // this should not happen but just in case
             return Explanation.noMatch("nothing matched");
@@ -159,22 +147,21 @@ public final class QueryRescorer implements Rescorer {
             // incoming first pass hits, instead of allowing recoring of just the top subset:
             Arrays.sort(in.scoreDocs, SCORE_DOC_COMPARATOR);
         }
+        // update the max score after the resort
+        in.setMaxScore(in.scoreDocs[0].score);
         return in;
     }
 
-    public static class QueryRescoreContext extends RescoreSearchContext {
-
-        static final int DEFAULT_WINDOW_SIZE = 10;
-
-        public QueryRescoreContext(QueryRescorer rescorer) {
-            super(NAME, DEFAULT_WINDOW_SIZE, rescorer);
-            this.scoreMode = QueryRescoreMode.Total;
-        }
-
+    public static class QueryRescoreContext extends RescoreContext {
         private Query query;
         private float queryWeight = 1.0f;
         private float rescoreQueryWeight = 1.0f;
         private QueryRescoreMode scoreMode;
+
+        public QueryRescoreContext(int windowSize) {
+            super(windowSize, QueryRescorer.INSTANCE);
+            this.scoreMode = QueryRescoreMode.Total;
+        }
 
         public void setQuery(Query query) {
             this.query = query;
@@ -214,12 +201,8 @@ public final class QueryRescorer implements Rescorer {
     }
 
     @Override
-    public void extractTerms(SearchContext context, RescoreSearchContext rescoreContext, Set<Term> termsSet) {
-        try {
-            context.searcher().createNormalizedWeight(((QueryRescoreContext) rescoreContext).query(), false).extractTerms(termsSet);
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to extract terms", e);
-        }
+    public void extractTerms(IndexSearcher searcher, RescoreContext rescoreContext, Set<Term> termsSet) throws IOException {
+        searcher.createNormalizedWeight(((QueryRescoreContext) rescoreContext).query(), false).extractTerms(termsSet);
     }
 
 }

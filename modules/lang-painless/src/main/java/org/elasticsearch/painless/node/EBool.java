@@ -57,11 +57,11 @@ public final class EBool extends AExpression {
 
     @Override
     void analyze(Locals locals) {
-        left.expected = Definition.BOOLEAN_TYPE;
+        left.expected = locals.getDefinition().booleanType;
         left.analyze(locals);
         left = left.cast(locals);
 
-        right.expected = Definition.BOOLEAN_TYPE;
+        right.expected = locals.getDefinition().booleanType;
         right.analyze(locals);
         right = right.cast(locals);
 
@@ -75,7 +75,7 @@ public final class EBool extends AExpression {
             }
         }
 
-        actual = Definition.BOOLEAN_TYPE;
+        actual = locals.getDefinition().booleanType;
     }
 
     @Override
@@ -113,5 +113,10 @@ public final class EBool extends AExpression {
         } else {
             throw createError(new IllegalStateException("Illegal tree structure."));
         }
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(left, operation.symbol, right);
     }
 }

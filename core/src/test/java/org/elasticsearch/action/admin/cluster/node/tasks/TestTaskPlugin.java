@@ -45,7 +45,8 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContent.Params;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
@@ -70,7 +71,7 @@ import static org.elasticsearch.test.ESTestCase.awaitBusy;
 public class TestTaskPlugin extends Plugin implements ActionPlugin {
 
     @Override
-    public List<ActionHandler<? extends ActionRequest<?>, ? extends ActionResponse>> getActions() {
+    public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
         return Arrays.asList(new ActionHandler<>(TestTaskAction.INSTANCE, TransportTestTaskAction.class),
                 new ActionHandler<>(UnblockTestTasksAction.INSTANCE, TransportUnblockTestTasksAction.class));
     }
@@ -79,8 +80,13 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
 
         private volatile boolean blocked = true;
 
-        public TestTask(long id, String type, String action, String description, TaskId parentTaskId) {
+        TestTask(long id, String type, String action, String description, TaskId parentTaskId) {
             super(id, type, action, description, parentTaskId);
+        }
+
+        @Override
+        public boolean shouldCancelChildrenOnCancellation() {
+            return false;
         }
 
         public boolean isBlocked() {
@@ -103,7 +109,7 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
         }
     }
 
-    public static class NodesResponse extends BaseNodesResponse<NodeResponse> implements ToXContent {
+    public static class NodesResponse extends BaseNodesResponse<NodeResponse> implements ToXContentFragment {
 
         NodesResponse() {
 
@@ -242,7 +248,12 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
 
         @Override
         public Task createTask(long id, String type, String action, TaskId parentTaskId) {
-            return new CancellableTask(id, type, action, getDescription(), parentTaskId);
+            return new CancellableTask(id, type, action, getDescription(), parentTaskId) {
+                @Override
+                public boolean shouldCancelChildrenOnCancellation() {
+                    return true;
+                }
+            };
         }
     }
 
@@ -303,10 +314,6 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
             throw new UnsupportedOperationException("the task parameter is required");
         }
 
-        @Override
-        protected boolean accumulateExceptions() {
-            return true;
-        }
     }
 
     public static class TestTaskAction extends Action<NodesRequest, NodesResponse, NodesRequestBuilder> {
@@ -380,7 +387,7 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
         private List<UnblockTestTaskResponse> tasks;
 
         public UnblockTestTasksResponse() {
-
+            super(null, null);
         }
 
         public UnblockTestTasksResponse(List<UnblockTestTaskResponse> tasks, List<TaskOperationFailure> taskFailures, List<? extends
@@ -438,15 +445,11 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin {
         }
 
         @Override
-        protected UnblockTestTaskResponse taskOperation(UnblockTestTasksRequest request, Task task) {
+        protected void taskOperation(UnblockTestTasksRequest request, Task task, ActionListener<UnblockTestTaskResponse> listener) {
             ((TestTask) task).unblock();
-            return new UnblockTestTaskResponse();
+            listener.onResponse(new UnblockTestTaskResponse());
         }
 
-        @Override
-        protected boolean accumulateExceptions() {
-            return true;
-        }
     }
 
     public static class UnblockTestTasksAction extends Action<UnblockTestTasksRequest, UnblockTestTasksResponse,

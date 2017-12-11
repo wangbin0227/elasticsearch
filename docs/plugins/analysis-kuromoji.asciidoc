@@ -4,34 +4,8 @@
 The Japanese (kuromoji) Analysis plugin integrates Lucene kuromoji analysis
 module into elasticsearch.
 
-[[analysis-kuromoji-install]]
-[float]
-==== Installation
-
-This plugin can be installed using the plugin manager:
-
-[source,sh]
-----------------------------------------------------------------
-sudo bin/elasticsearch-plugin install analysis-kuromoji
-----------------------------------------------------------------
-// NOTCONSOLE
-
-The plugin must be installed on every node in the cluster, and each node must
-be restarted after installation.
-
-[[analysis-kuromoji-remove]]
-[float]
-==== Removal
-
-The plugin can be removed with the following command:
-
-[source,sh]
-----------------------------------------------------------------
-sudo bin/elasticsearch-plugin remove analysis-kuromoji
-----------------------------------------------------------------
-// NOTCONSOLE
-
-The node must be stopped before removing the plugin.
+:plugin_name: analysis-kuromoji
+include::install_remove.asciidoc[]
 
 [[analysis-kuromoji-analyzer]]
 ==== `kuromoji` analyzer
@@ -174,7 +148,11 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=東京スカイツリー
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "東京スカイツリー"
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -182,7 +160,6 @@ The above `analyze` request returns the following:
 
 [source,js]
 --------------------------------------------------
-# Result
 {
   "tokens" : [ {
     "token" : "東京",
@@ -227,7 +204,11 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=飲み
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "飲み"
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -289,7 +270,11 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=寿司がおいしいね
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "寿司がおいしいね"
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -362,9 +347,17 @@ PUT kuromoji_sample
     }
 }
 
-POST kuromoji_sample/_analyze?analyzer=katakana_analyzer&text=寿司 <1>
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "katakana_analyzer",
+  "text": "寿司" <1>
+}
 
-POST kuromoji_sample/_analyze?analyzer=romaji_analyzer&text=寿司 <2>
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "romaji_analyzer",
+  "text": "寿司" <2>
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -412,9 +405,17 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=コピー <1>
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "コピー" <1>
+}
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=サーバー <2>
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "サーバー" <2>
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -423,7 +424,7 @@ POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=サーバー <2>
 
 
 [[analysis-kuromoji-stop]]
-===== `ja_stop` token filter
+==== `ja_stop` token filter
 
 The `ja_stop` token filter filters out Japanese stopwords (`_japanese_`), and
 any other custom stopwords specified by the user. This filter only supports
@@ -460,7 +461,11 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=analyzer_with_ja_stop&text=ストップは消える
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "analyzer_with_ja_stop",
+  "text": "ストップは消える"
+}
 --------------------------------------------------
 // CONSOLE
 
@@ -474,13 +479,14 @@ The above request returns:
     "start_offset" : 5,
     "end_offset" : 8,
     "type" : "word",
-    "position" : 3
+    "position" : 2
   } ]
 }
 --------------------------------------------------
+// TESTRESPONSE
 
 [[analysis-kuromoji-number]]
-===== `kuromoji_number` token filter
+==== `kuromoji_number` token filter
 
 The `kuromoji_number` token filter normalizes Japanese numbers (kansūji)
 to regular Arabic decimal numbers in half-width characters. For example:
@@ -505,7 +511,11 @@ PUT kuromoji_sample
   }
 }
 
-POST kuromoji_sample/_analyze?analyzer=my_analyzer&text=一〇〇〇
+GET kuromoji_sample/_analyze
+{
+  "analyzer": "my_analyzer",
+  "text": "一〇〇〇"
+}
 --------------------------------------------------
 // CONSOLE
 

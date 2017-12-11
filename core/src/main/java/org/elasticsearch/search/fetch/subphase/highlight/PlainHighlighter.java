@@ -47,11 +47,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- *
- */
-public class PlainHighlighter implements Highlighter {
+import static org.elasticsearch.search.fetch.subphase.highlight.UnifiedHighlighter.convertFieldValue;
+import static org.elasticsearch.search.fetch.subphase.highlight.UnifiedHighlighter.getAnalyzer;
 
+public class PlainHighlighter implements Highlighter {
     private static final String CACHE_KEY = "highlight-plain";
 
     @Override
@@ -103,13 +102,12 @@ public class PlainHighlighter implements Highlighter {
         int numberOfFragments = field.fieldOptions().numberOfFragments() == 0 ? 1 : field.fieldOptions().numberOfFragments();
         ArrayList<TextFragment> fragsList = new ArrayList<>();
         List<Object> textsToHighlight;
-        Analyzer analyzer = context.mapperService().documentMapper(hitContext.hit().type()).mappers().indexAnalyzer();
-
+        Analyzer analyzer = getAnalyzer(context.mapperService().documentMapper(hitContext.hit().getType()), mapper.fieldType());
         try {
             textsToHighlight = HighlightUtils.loadFieldValues(field, mapper, context, hitContext);
 
             for (Object textToHighlight : textsToHighlight) {
-                String text = textToHighlight.toString();
+                String text = convertFieldValue(mapper.fieldType(), textToHighlight);
 
                 try (TokenStream tokenStream = analyzer.tokenStream(mapper.fieldType().name(), text)) {
                     if (!tokenStream.hasAttribute(CharTermAttribute.class) || !tokenStream.hasAttribute(OffsetAttribute.class)) {

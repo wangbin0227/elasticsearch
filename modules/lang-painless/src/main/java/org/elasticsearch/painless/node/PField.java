@@ -22,7 +22,6 @@ package org.elasticsearch.painless.node;
 import org.elasticsearch.painless.Definition;
 import org.elasticsearch.painless.Definition.Field;
 import org.elasticsearch.painless.Definition.Method;
-import org.elasticsearch.painless.Definition.Sort;
 import org.elasticsearch.painless.Definition.Struct;
 import org.elasticsearch.painless.Definition.Type;
 import org.elasticsearch.painless.Globals;
@@ -40,13 +39,15 @@ import java.util.Set;
  */
 public final class PField extends AStoreable {
 
+    private final boolean nullSafe;
     private final String value;
 
     private AStoreable sub = null;
 
-    public PField(Location location, AExpression prefix, String value) {
+    public PField(Location location, AExpression prefix, boolean nullSafe, String value) {
         super(location, prefix);
 
+        this.nullSafe = nullSafe;
         this.value = Objects.requireNonNull(value);
     }
 
@@ -61,11 +62,9 @@ public final class PField extends AStoreable {
         prefix.expected = prefix.actual;
         prefix = prefix.cast(locals);
 
-        Sort sort = prefix.actual.sort;
-
-        if (sort == Sort.ARRAY) {
-            sub = new PSubArrayLength(location,prefix.actual.name, value);
-        } else if (sort == Sort.DEF) {
+        if (prefix.actual.dimensions > 0) {
+            sub = new PSubArrayLength(location, prefix.actual.name, value);
+        } else if (prefix.actual.dynamic) {
             sub = new PSubDefField(location, value);
         } else {
             Struct struct = prefix.actual.struct;
@@ -104,6 +103,10 @@ public final class PField extends AStoreable {
 
         if (sub == null) {
             throw createError(new IllegalArgumentException("Unknown field [" + value + "] for type [" + prefix.actual.name + "]."));
+        }
+
+        if (nullSafe) {
+            sub = new PSubNullSafeField(location, sub);
         }
 
         sub.write = write;
@@ -150,5 +153,13 @@ public final class PField extends AStoreable {
     @Override
     void store(MethodWriter writer, Globals globals) {
         sub.store(writer, globals);
+    }
+
+    @Override
+    public String toString() {
+        if (nullSafe) {
+            return singleLineToString("nullSafe", prefix, value);
+        }
+        return singleLineToString(prefix, value);
     }
 }

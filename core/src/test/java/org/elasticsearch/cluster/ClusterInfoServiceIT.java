@@ -23,7 +23,6 @@ import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
-import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsAction;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsAction;
 import org.elasticsearch.action.support.ActionFilter;
@@ -35,7 +34,6 @@ import org.elasticsearch.cluster.routing.allocation.decider.EnableAllocationDeci
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.env.NodeEnvironment;
@@ -48,7 +46,6 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.InternalTestCluster;
 import org.elasticsearch.test.transport.MockTransportService;
-import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportRequest;
 import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportService;
@@ -78,30 +75,31 @@ import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 public class ClusterInfoServiceIT extends ESIntegTestCase {
 
     public static class TestPlugin extends Plugin implements ActionPlugin {
+
+        private final BlockingActionFilter blockingActionFilter;
+
+        public TestPlugin(Settings settings) {
+            blockingActionFilter = new BlockingActionFilter(settings);
+        }
+
         @Override
-        public List<Class<? extends ActionFilter>> getActionFilters() {
-            return singletonList(BlockingActionFilter.class);
+        public List<ActionFilter> getActionFilters() {
+            return singletonList(blockingActionFilter);
         }
     }
 
     public static class BlockingActionFilter extends org.elasticsearch.action.support.ActionFilter.Simple {
         private Set<String> blockedActions = emptySet();
 
-        @Inject
         public BlockingActionFilter(Settings settings) {
             super(settings);
         }
 
         @Override
-        protected boolean apply(String action, ActionRequest<?> request, ActionListener<?> listener) {
+        protected boolean apply(String action, ActionRequest request, ActionListener<?> listener) {
             if (blockedActions.contains(action)) {
                 throw new ElasticsearchException("force exception on [" + action + "]");
             }
-            return true;
-        }
-
-        @Override
-        protected boolean apply(String action, ActionResponse response, ActionListener<?> listener) {
             return true;
         }
 
@@ -131,7 +129,7 @@ public class ClusterInfoServiceIT extends ESIntegTestCase {
     }
 
     public void testClusterInfoServiceCollectsInformation() throws Exception {
-        internalCluster().startNodesAsync(2).get();
+        internalCluster().startNodes(2);
         assertAcked(prepareCreate("test").setSettings(Settings.builder()
                 .put(Store.INDEX_STORE_STATS_REFRESH_INTERVAL_SETTING.getKey(), 0)
                 .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), EnableAllocationDecider.Rebalance.NONE).build()));
@@ -175,15 +173,13 @@ public class ClusterInfoServiceIT extends ESIntegTestCase {
             IndexShard indexShard = indexService.getShardOrNull(shard.id());
             assertEquals(indexShard.shardPath().getRootDataPath().toString(), dataPath);
         }
-
     }
 
     public void testClusterInfoServiceInformationClearOnError() throws InterruptedException, ExecutionException {
-        internalCluster().startNodesAsync(2,
+        internalCluster().startNodes(2,
                 // manually control publishing
-                Settings.builder().put(InternalClusterInfoService.INTERNAL_CLUSTER_INFO_UPDATE_INTERVAL_SETTING.getKey(), "60m").build())
-                .get();
-        prepareCreate("test").setSettings(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1).get();
+                Settings.builder().put(InternalClusterInfoService.INTERNAL_CLUSTER_INFO_UPDATE_INTERVAL_SETTING.getKey(), "60m").build());
+        prepareCreate("test").setSettings(Settings.builder().put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)).get();
         ensureGreen("test");
         InternalTestCluster internalTestCluster = internalCluster();
         InternalClusterInfoService infoService = (InternalClusterInfoService) internalTestCluster.getInstance(ClusterInfoService.class, internalTestCluster.getMasterName());
@@ -202,15 +198,15 @@ public class ClusterInfoServiceIT extends ESIntegTestCase {
         for (DiscoveryNode node : internalTestCluster.clusterService().state().getNodes()) {
             mockTransportService.addDelegate(internalTestCluster.getInstance(TransportService.class, node.getName()), new MockTransportService.DelegateTransport(mockTransportService.original()) {
                 @Override
-                public void sendRequest(DiscoveryNode node, long requestId, String action, TransportRequest request,
-                                        TransportRequestOptions options) throws IOException, TransportException {
+                protected void sendRequest(Connection connection, long requestId, String action, TransportRequest request,
+                                           TransportRequestOptions options) throws IOException {
                     if (blockedActions.contains(action)) {
                         if (timeout.get()) {
                             logger.info("dropping [{}] to [{}]", action, node);
                             return;
                         }
                     }
-                    super.sendRequest(node, requestId, action, request, options);
+                    super.sendRequest(connection, requestId, action, request, options);
                 }
             });
         }

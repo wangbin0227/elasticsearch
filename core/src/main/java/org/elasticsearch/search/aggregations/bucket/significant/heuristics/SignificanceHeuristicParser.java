@@ -20,7 +20,6 @@
 
 package org.elasticsearch.search.aggregations.bucket.significant.heuristics;
 
-import org.elasticsearch.common.ParseFieldMatcher;
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.xcontent.XContentParser;
 
@@ -31,6 +30,5 @@ import java.io.IOException;
  */
 @FunctionalInterface
 public interface SignificanceHeuristicParser {
-    SignificanceHeuristic parse(XContentParser parser, ParseFieldMatcher parseFieldMatcher) throws IOException,
-            ParsingException;
+    SignificanceHeuristic parse(XContentParser parser) throws IOException, ParsingException;
 }

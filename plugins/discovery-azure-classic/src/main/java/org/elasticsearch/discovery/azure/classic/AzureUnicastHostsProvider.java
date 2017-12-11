@@ -32,14 +32,13 @@ import org.elasticsearch.cloud.azure.classic.management.AzureComputeService.Disc
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.component.AbstractComponent;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.network.InetAddresses;
 import org.elasticsearch.common.network.NetworkAddress;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.zen.ping.unicast.UnicastHostsProvider;
+import org.elasticsearch.discovery.zen.UnicastHostsProvider;
 import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
@@ -51,9 +50,6 @@ import java.util.List;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 
-/**
- *
- */
 public class AzureUnicastHostsProvider extends AbstractComponent implements UnicastHostsProvider {
 
     public enum HostType {
@@ -110,10 +106,8 @@ public class AzureUnicastHostsProvider extends AbstractComponent implements Unic
     private final String deploymentName;
     private final DeploymentSlot deploymentSlot;
 
-    @Inject
     public AzureUnicastHostsProvider(Settings settings, AzureComputeService azureComputeService,
-                                   TransportService transportService,
-                                   NetworkService networkService) {
+                                     TransportService transportService, NetworkService networkService) {
         super(settings);
         this.azureComputeService = azureComputeService;
         this.transportService = transportService;
@@ -167,7 +161,8 @@ public class AzureUnicastHostsProvider extends AbstractComponent implements Unic
 
         InetAddress ipAddress = null;
         try {
-            ipAddress = networkService.resolvePublishHostAddresses(null);
+            ipAddress = networkService.resolvePublishHostAddresses(
+                NetworkService.GLOBAL_NETWORK_PUBLISHHOST_SETTING.get(settings).toArray(Strings.EMPTY_ARRAY));
             logger.trace("ip of current node: [{}]", ipAddress);
         } catch (IOException e) {
             // We can't find the publish host address... Hmmm. Too bad :-(

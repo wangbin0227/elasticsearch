@@ -34,7 +34,7 @@ import org.elasticsearch.index.search.stats.SearchStats.Stats;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.script.MockScriptPlugin;
 import org.elasticsearch.script.Script;
-import org.elasticsearch.script.ScriptService.ScriptType;
+import org.elasticsearch.script.ScriptType;
 import org.elasticsearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.elasticsearch.test.ESIntegTestCase;
 
@@ -121,7 +121,8 @@ public class SearchStatsIT extends ESIntegTestCase {
             SearchResponse searchResponse = internalCluster().coordOnlyNodeClient().prepareSearch()
                     .setQuery(QueryBuilders.termQuery("field", "value")).setStats("group1", "group2")
                     .highlighter(new HighlightBuilder().field("field"))
-                    .addScriptField("script1", new Script("_source.field", ScriptType.INLINE, CustomScriptPlugin.NAME, null))
+                    .addScriptField("script1",
+                        new Script(ScriptType.INLINE, CustomScriptPlugin.NAME, "_source.field", Collections.emptyMap()))
                     .setSize(100)
                     .execute().actionGet();
             assertHitCount(searchResponse, docsTest1 + docsTest2);
@@ -164,10 +165,10 @@ public class SearchStatsIT extends ESIntegTestCase {
 
     private Set<String> nodeIdsWithIndex(String... indices) {
         ClusterState state = client().admin().cluster().prepareState().execute().actionGet().getState();
-        GroupShardsIterator allAssignedShardsGrouped = state.routingTable().allAssignedShardsGrouped(indices, true);
+        GroupShardsIterator<ShardIterator> allAssignedShardsGrouped = state.routingTable().allAssignedShardsGrouped(indices, true);
         Set<String> nodes = new HashSet<>();
         for (ShardIterator shardIterator : allAssignedShardsGrouped) {
-            for (ShardRouting routing : shardIterator.asUnordered()) {
+            for (ShardRouting routing : shardIterator) {
                 if (routing.active()) {
                     nodes.add(routing.currentNodeId());
                 }

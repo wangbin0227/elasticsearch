@@ -26,14 +26,14 @@ import org.apache.lucene.search.spell.LuceneLevenshteinDistance;
 import org.apache.lucene.search.spell.NGramDistance;
 import org.apache.lucene.search.spell.StringDistance;
 import org.elasticsearch.ElasticsearchParseException;
-import org.elasticsearch.common.ParseFieldMatcher;
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.logging.DeprecationLogger;
+import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.query.QueryParseContext;
 import org.elasticsearch.index.query.QueryShardContext;
 import org.elasticsearch.search.suggest.DirectSpellcheckerSettings;
 import org.elasticsearch.search.suggest.SortBy;
@@ -68,6 +68,9 @@ import static org.elasticsearch.search.suggest.phrase.DirectCandidateGeneratorBu
  * global options, but are only applicable for this suggestion.
  */
 public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuilder> {
+
+    private static final DeprecationLogger DEPRECATION_LOGGER = new DeprecationLogger(Loggers.getLogger(TermSuggestionBuilder.class));
+
     private static final String SUGGESTION_NAME = "term";
 
     private SuggestMode suggestMode = SuggestMode.MISSING;
@@ -105,7 +108,7 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
     /**
      * Read from a stream.
      */
-    TermSuggestionBuilder(StreamInput in) throws IOException {
+    public TermSuggestionBuilder(StreamInput in) throws IOException {
         super(in);
         suggestMode = SuggestMode.readFromStream(in);
         accuracy = in.readFloat();
@@ -216,9 +219,9 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
      * string distance for terms inside the index.
      * <li><code>damerau_levenshtein</code> - String distance algorithm based on
      * Damerau-Levenshtein algorithm.
-     * <li><code>levenstein</code> - String distance algorithm based on
-     * Levenstein edit distance algorithm.
-     * <li><code>jarowinkler</code> - String distance algorithm based on
+     * <li><code>levenshtein</code> - String distance algorithm based on
+     * Levenshtein edit distance algorithm.
+     * <li><code>jaro_winkler</code> - String distance algorithm based on
      * Jaro-Winkler algorithm.
      * <li><code>ngram</code> - String distance algorithm based on character
      * n-grams.
@@ -388,10 +391,8 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
         return builder;
     }
 
-    static TermSuggestionBuilder innerFromXContent(QueryParseContext parseContext) throws IOException {
-        XContentParser parser = parseContext.parser();
+    public static TermSuggestionBuilder fromXContent(XContentParser parser) throws IOException {
         TermSuggestionBuilder tmpSuggestion = new TermSuggestionBuilder("_na_");
-        ParseFieldMatcher parseFieldMatcher = parseContext.getParseFieldMatcher();
         XContentParser.Token token;
         String currentFieldName = null;
         String fieldname = null;
@@ -399,33 +400,33 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
             if (token == XContentParser.Token.FIELD_NAME) {
                 currentFieldName = parser.currentName();
             } else if (token.isValue()) {
-                if (parseFieldMatcher.match(currentFieldName, SuggestionBuilder.ANALYZER_FIELD)) {
+                if (SuggestionBuilder.ANALYZER_FIELD.match(currentFieldName)) {
                     tmpSuggestion.analyzer(parser.text());
-                } else if (parseFieldMatcher.match(currentFieldName, SuggestionBuilder.FIELDNAME_FIELD)) {
+                } else if (SuggestionBuilder.FIELDNAME_FIELD.match(currentFieldName)) {
                     fieldname = parser.text();
-                } else if (parseFieldMatcher.match(currentFieldName, SuggestionBuilder.SIZE_FIELD)) {
+                } else if (SuggestionBuilder.SIZE_FIELD.match(currentFieldName)) {
                     tmpSuggestion.size(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, SuggestionBuilder.SHARDSIZE_FIELD)) {
+                } else if (SuggestionBuilder.SHARDSIZE_FIELD.match(currentFieldName)) {
                     tmpSuggestion.shardSize(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, SUGGESTMODE_FIELD)) {
+                } else if (SUGGESTMODE_FIELD.match(currentFieldName)) {
                     tmpSuggestion.suggestMode(SuggestMode.resolve(parser.text()));
-                } else if (parseFieldMatcher.match(currentFieldName, ACCURACY_FIELD)) {
+                } else if (ACCURACY_FIELD.match(currentFieldName)) {
                     tmpSuggestion.accuracy(parser.floatValue());
-                } else if (parseFieldMatcher.match(currentFieldName, SORT_FIELD)) {
+                } else if (SORT_FIELD.match(currentFieldName)) {
                     tmpSuggestion.sort(SortBy.resolve(parser.text()));
-                } else if (parseFieldMatcher.match(currentFieldName, STRING_DISTANCE_FIELD)) {
+                } else if (STRING_DISTANCE_FIELD.match(currentFieldName)) {
                     tmpSuggestion.stringDistance(StringDistanceImpl.resolve(parser.text()));
-                } else if (parseFieldMatcher.match(currentFieldName, MAX_EDITS_FIELD)) {
+                } else if (MAX_EDITS_FIELD.match(currentFieldName)) {
                     tmpSuggestion.maxEdits(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, MAX_INSPECTIONS_FIELD)) {
+                } else if (MAX_INSPECTIONS_FIELD.match(currentFieldName)) {
                     tmpSuggestion.maxInspections(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, MAX_TERM_FREQ_FIELD)) {
+                } else if (MAX_TERM_FREQ_FIELD.match(currentFieldName)) {
                     tmpSuggestion.maxTermFreq(parser.floatValue());
-                } else if (parseFieldMatcher.match(currentFieldName, PREFIX_LENGTH_FIELD)) {
+                } else if (PREFIX_LENGTH_FIELD.match(currentFieldName)) {
                     tmpSuggestion.prefixLength(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, MIN_WORD_LENGTH_FIELD)) {
+                } else if (MIN_WORD_LENGTH_FIELD.match(currentFieldName)) {
                     tmpSuggestion.minWordLength(parser.intValue());
-                } else if (parseFieldMatcher.match(currentFieldName, MIN_DOC_FREQ_FIELD)) {
+                } else if (MIN_DOC_FREQ_FIELD.match(currentFieldName)) {
                     tmpSuggestion.minDocFreq(parser.floatValue());
                 } else {
                     throw new ParsingException(parser.getTokenLocation(),
@@ -515,15 +516,11 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
 
         @Override
         public void writeTo(final StreamOutput out) throws IOException {
-            out.writeVInt(ordinal());
+            out.writeEnum(this);
         }
 
         public static SuggestMode readFromStream(final StreamInput in) throws IOException {
-            int ordinal = in.readVInt();
-            if (ordinal < 0 || ordinal >= values().length) {
-                throw new IOException("Unknown SuggestMode ordinal [" + ordinal + "]");
-            }
-            return values()[ordinal];
+            return in.readEnum(SuggestMode.class);
         }
 
         public static SuggestMode resolve(final String str) {
@@ -551,15 +548,15 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
                 return new LuceneLevenshteinDistance();
             }
         },
-        /** String distance algorithm based on Levenstein edit distance algorithm. */
-        LEVENSTEIN {
+        /** String distance algorithm based on Levenshtein edit distance algorithm. */
+        LEVENSHTEIN {
             @Override
             public StringDistance toLucene() {
                 return new LevensteinDistance();
             }
         },
         /** String distance algorithm based on Jaro-Winkler algorithm. */
-        JAROWINKLER {
+        JARO_WINKLER {
             @Override
             public StringDistance toLucene() {
                 return new JaroWinklerDistance();
@@ -575,32 +572,27 @@ public class TermSuggestionBuilder extends SuggestionBuilder<TermSuggestionBuild
 
         @Override
         public void writeTo(final StreamOutput out) throws IOException {
-            out.writeVInt(ordinal());
+            out.writeEnum(this);
         }
 
         public static StringDistanceImpl readFromStream(final StreamInput in) throws IOException {
-            int ordinal = in.readVInt();
-            if (ordinal < 0 || ordinal >= values().length) {
-                throw new IOException("Unknown StringDistanceImpl ordinal [" + ordinal + "]");
-            }
-            return values()[ordinal];
+            return in.readEnum(StringDistanceImpl.class);
         }
 
         public static StringDistanceImpl resolve(final String str) {
             Objects.requireNonNull(str, "Input string is null");
-            final String distanceVal = str.toLowerCase(Locale.US);
+            final String distanceVal = str.toLowerCase(Locale.ROOT);
             switch (distanceVal) {
                 case "internal":
                     return INTERNAL;
                 case "damerau_levenshtein":
-                case "damerauLevenshtein":
                     return DAMERAU_LEVENSHTEIN;
-                case "levenstein":
-                    return LEVENSTEIN;
+                case "levenshtein":
+                    return LEVENSHTEIN;
                 case "ngram":
                     return NGRAM;
-                case "jarowinkler":
-                    return JAROWINKLER;
+                case "jaro_winkler":
+                    return JARO_WINKLER;
                 default: throw new IllegalArgumentException("Illegal distance option " + str);
             }
         }

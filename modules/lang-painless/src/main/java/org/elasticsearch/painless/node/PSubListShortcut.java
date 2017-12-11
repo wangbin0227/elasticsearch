@@ -21,13 +21,13 @@ package org.elasticsearch.painless.node;
 
 import org.elasticsearch.painless.Definition;
 import org.elasticsearch.painless.Definition.Method;
-import org.elasticsearch.painless.Definition.Sort;
 import org.elasticsearch.painless.Definition.Struct;
 import org.elasticsearch.painless.Definition.Type;
 import org.elasticsearch.painless.Globals;
 import org.elasticsearch.painless.Locals;
 import org.elasticsearch.painless.Location;
 import org.elasticsearch.painless.MethodWriter;
+import org.elasticsearch.painless.WriterConstants;
 
 import java.util.Objects;
 import java.util.Set;
@@ -60,12 +60,12 @@ final class PSubListShortcut extends AStoreable {
         getter = struct.methods.get(new Definition.MethodKey("get", 1));
         setter = struct.methods.get(new Definition.MethodKey("set", 2));
 
-        if (getter != null && (getter.rtn.sort == Sort.VOID || getter.arguments.size() != 1 ||
-            getter.arguments.get(0).sort != Sort.INT)) {
+        if (getter != null && (getter.rtn.clazz == void.class || getter.arguments.size() != 1 ||
+            getter.arguments.get(0).clazz != int.class)) {
             throw createError(new IllegalArgumentException("Illegal list get shortcut for type [" + struct.name + "]."));
         }
 
-        if (setter != null && (setter.arguments.size() != 2 || setter.arguments.get(0).sort != Sort.INT)) {
+        if (setter != null && (setter.arguments.size() != 2 || setter.arguments.get(0).clazz != int.class)) {
             throw createError(new IllegalArgumentException("Illegal list set shortcut for type [" + struct.name + "]."));
         }
 
@@ -75,7 +75,7 @@ final class PSubListShortcut extends AStoreable {
         }
 
         if ((read || write) && (!read || getter != null) && (!write || setter != null)) {
-            index.expected = Definition.INT_TYPE;
+            index.expected = locals.getDefinition().intType;
             index.analyze(locals);
             index = index.cast(locals);
 
@@ -87,15 +87,8 @@ final class PSubListShortcut extends AStoreable {
 
     @Override
     void write(MethodWriter writer, Globals globals) {
-        index.write(writer, globals);
-
-        writer.writeDebugInfo(location);
-
-        getter.write(writer);
-
-        if (!getter.rtn.clazz.equals(getter.handle.type().returnType())) {
-            writer.checkCast(getter.rtn.type);
-        }
+        setup(writer, globals);
+        load(writer, globals);
     }
 
     @Override
@@ -116,6 +109,9 @@ final class PSubListShortcut extends AStoreable {
     @Override
     void setup(MethodWriter writer, Globals globals) {
         index.write(writer, globals);
+        writeIndexFlip(writer, w -> {
+            w.invokeInterface(WriterConstants.COLLECTION_TYPE, WriterConstants.COLLECTION_SIZE);
+        });
     }
 
     @Override
@@ -135,6 +131,11 @@ final class PSubListShortcut extends AStoreable {
 
         setter.write(writer);
 
-        writer.writePop(setter.rtn.sort.size);
+        writer.writePop(setter.rtn.type.getSize());
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(prefix, index);
     }
 }

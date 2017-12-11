@@ -30,7 +30,9 @@ import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -43,6 +45,7 @@ import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_ME
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_READ;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_WRITE;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_READ_ONLY;
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_READ_ONLY_ALLOW_DELETE;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertBlocked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
@@ -65,27 +68,22 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("test1").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1");
     }
 
     public void testSimpleCloseMissingIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareClose("test1").execute().actionGet();
-            fail("Expected IndexNotFoundException");
-        } catch (IndexNotFoundException e) {
-            assertThat(e.getMessage(), is("no such index"));
-        }
+        Exception e = expectThrows(IndexNotFoundException.class, () ->
+            client.admin().indices().prepareClose("test1").execute().actionGet());
+        assertThat(e.getMessage(), is("no such index"));
     }
 
     public void testSimpleOpenMissingIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareOpen("test1").execute().actionGet();
-            fail("Expected IndexNotFoundException");
-        } catch (IndexNotFoundException e) {
-            assertThat(e.getMessage(), is("no such index"));
-        }
+        Exception e = expectThrows(IndexNotFoundException.class, () ->
+            client.admin().indices().prepareOpen("test1").execute().actionGet());
+        assertThat(e.getMessage(), is("no such index"));
     }
 
     public void testCloseOneMissingIndex() {
@@ -93,12 +91,9 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         createIndex("test1");
         ClusterHealthResponse healthResponse = client.admin().cluster().prepareHealth().setWaitForGreenStatus().execute().actionGet();
         assertThat(healthResponse.isTimedOut(), equalTo(false));
-        try {
-            client.admin().indices().prepareClose("test1", "test2").execute().actionGet();
-            fail("Expected IndexNotFoundException");
-        } catch (IndexNotFoundException e) {
-            assertThat(e.getMessage(), is("no such index"));
-        }
+        Exception e = expectThrows(IndexNotFoundException.class, () ->
+            client.admin().indices().prepareClose("test1", "test2").execute().actionGet());
+        assertThat(e.getMessage(), is("no such index"));
     }
 
     public void testCloseOneMissingIndexIgnoreMissing() {
@@ -117,12 +112,9 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         createIndex("test1");
         ClusterHealthResponse healthResponse = client.admin().cluster().prepareHealth().setWaitForGreenStatus().execute().actionGet();
         assertThat(healthResponse.isTimedOut(), equalTo(false));
-        try {
-            client.admin().indices().prepareOpen("test1", "test2").execute().actionGet();
-            fail("Expected IndexNotFoundException");
-        } catch (IndexNotFoundException e) {
-            assertThat(e.getMessage(), is("no such index"));
-        }
+        Exception e = expectThrows(IndexNotFoundException.class, () ->
+            client.admin().indices().prepareOpen("test1", "test2").execute().actionGet());
+        assertThat(e.getMessage(), is("no such index"));
     }
 
     public void testOpenOneMissingIndexIgnoreMissing() {
@@ -133,6 +125,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("test1", "test2")
                 .setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1");
     }
 
@@ -151,8 +144,10 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse1 = client.admin().indices().prepareOpen("test1").execute().actionGet();
         assertThat(openIndexResponse1.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse1.isShardsAcknowledged(), equalTo(true));
         OpenIndexResponse openIndexResponse2 = client.admin().indices().prepareOpen("test2").execute().actionGet();
         assertThat(openIndexResponse2.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse2.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1", "test2", "test3");
     }
 
@@ -169,6 +164,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("test*").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1", "test2", "a");
     }
 
@@ -184,6 +180,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("_all").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1", "test2", "test3");
     }
 
@@ -199,47 +196,36 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("*").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1", "test2", "test3");
     }
 
     public void testCloseNoIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareClose().execute().actionGet();
-            fail("Expected ActionRequestValidationException");
-        } catch (ActionRequestValidationException e) {
-            assertThat(e.getMessage(), containsString("index is missing"));
-        }
+        Exception e = expectThrows(ActionRequestValidationException.class, () ->
+            client.admin().indices().prepareClose().execute().actionGet());
+        assertThat(e.getMessage(), containsString("index is missing"));
     }
 
     public void testCloseNullIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareClose((String[])null).execute().actionGet();
-            fail("Expected ActionRequestValidationException");
-        } catch (ActionRequestValidationException e) {
-            assertThat(e.getMessage(), containsString("index is missing"));
-        }
+        Exception e = expectThrows(ActionRequestValidationException.class, () ->
+            client.admin().indices().prepareClose((String[])null).execute().actionGet());
+        assertThat(e.getMessage(), containsString("index is missing"));
     }
 
     public void testOpenNoIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareOpen().execute().actionGet();
-            fail("Expected ActionRequestValidationException");
-        } catch (ActionRequestValidationException e) {
-            assertThat(e.getMessage(), containsString("index is missing"));
-        }
+        Exception e = expectThrows(ActionRequestValidationException.class, () ->
+            client.admin().indices().prepareOpen().execute().actionGet());
+        assertThat(e.getMessage(), containsString("index is missing"));
     }
 
     public void testOpenNullIndex() {
         Client client = client();
-        try {
-            client.admin().indices().prepareOpen((String[])null).execute().actionGet();
-            fail("Expected ActionRequestValidationException");
-        } catch (ActionRequestValidationException e) {
-            assertThat(e.getMessage(), containsString("index is missing"));
-        }
+        Exception e = expectThrows(ActionRequestValidationException.class, () ->
+            client.admin().indices().prepareOpen((String[])null).execute().actionGet());
+        assertThat(e.getMessage(), containsString("index is missing"));
     }
 
     public void testOpenAlreadyOpenedIndex() {
@@ -251,6 +237,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         //no problem if we try to open an index that's already in open state
         OpenIndexResponse openIndexResponse1 = client.admin().indices().prepareOpen("test1").execute().actionGet();
         assertThat(openIndexResponse1.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse1.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1");
     }
 
@@ -286,6 +273,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("test1-alias").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1");
     }
 
@@ -306,7 +294,24 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
 
         OpenIndexResponse openIndexResponse = client.admin().indices().prepareOpen("test-alias").execute().actionGet();
         assertThat(openIndexResponse.isAcknowledged(), equalTo(true));
+        assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
         assertIndexIsOpened("test1", "test2");
+    }
+
+    public void testOpenWaitingForActiveShardsFailed() throws Exception {
+        Client client = client();
+        Settings settings = Settings.builder()
+            .put(IndexMetaData.INDEX_NUMBER_OF_SHARDS_SETTING.getKey(), 1)
+            .put(IndexMetaData.INDEX_NUMBER_OF_REPLICAS_SETTING.getKey(), 0)
+            .build();
+        assertAcked(client.admin().indices().prepareCreate("test").setSettings(settings).get());
+        assertAcked(client.admin().indices().prepareClose("test").get());
+
+        OpenIndexResponse response = client.admin().indices().prepareOpen("test").setTimeout("100ms").setWaitForActiveShards(2).get();
+        assertThat(response.isShardsAcknowledged(), equalTo(false));
+        assertBusy(() -> assertThat(client.admin().cluster().prepareState().get().getState().metaData().index("test").getState(),
+            equalTo(IndexMetaData.State.OPEN)));
+        ensureGreen("test");
     }
 
     private void assertIndexIsOpened(String... indices) {
@@ -339,7 +344,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
                 .endObject().string();
 
         assertAcked(client().admin().indices().prepareCreate("test")
-                .addMapping("type", mapping));
+                .addMapping("type", mapping, XContentType.JSON));
         ensureGreen();
         int docs = between(10, 100);
         IndexRequestBuilder[] builder = new IndexRequestBuilder[docs];
@@ -348,7 +353,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         }
         indexRandom(true, builder);
         if (randomBoolean()) {
-            client().admin().indices().prepareFlush("test").setWaitIfOngoing(true).setForce(true).execute().get();
+            client().admin().indices().prepareFlush("test").setForce(true).execute().get();
         }
         client().admin().indices().prepareClose("test").execute().get();
 
@@ -381,6 +386,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
                 // Opening an index is not blocked
                 OpenIndexResponse openIndexResponse = client().admin().indices().prepareOpen("test").execute().actionGet();
                 assertAcked(openIndexResponse);
+                assertThat(openIndexResponse.isShardsAcknowledged(), equalTo(true));
                 assertIndexIsOpened("test");
             } finally {
                 disableIndexBlock("test", blockSetting);
@@ -403,7 +409,7 @@ public class OpenCloseIndexIT extends ESIntegTestCase {
         assertIndexIsClosed("test");
 
         // Opening an index is blocked
-        for (String blockSetting : Arrays.asList(SETTING_READ_ONLY, SETTING_BLOCKS_METADATA)) {
+        for (String blockSetting : Arrays.asList(SETTING_READ_ONLY, SETTING_READ_ONLY_ALLOW_DELETE, SETTING_BLOCKS_METADATA)) {
             try {
                 enableIndexBlock("test", blockSetting);
                 assertBlocked(client().admin().indices().prepareOpen("test"));

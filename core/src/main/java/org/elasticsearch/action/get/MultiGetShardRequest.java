@@ -35,7 +35,6 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
     private String preference;
     boolean realtime = true;
     boolean refresh;
-    boolean ignoreErrorsOnGeneratedFields = false;
 
     IntArrayList locations;
     List<MultiGetRequest.Item> items;
@@ -52,7 +51,6 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
         preference = multiGetRequest.preference;
         realtime = multiGetRequest.realtime;
         refresh = multiGetRequest.refresh;
-        ignoreErrorsOnGeneratedFields = multiGetRequest.ignoreErrorsOnGeneratedFields;
     }
 
     @Override
@@ -66,8 +64,8 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
 
     /**
      * Sets the preference to execute the search. Defaults to randomize across shards. Can be set to
-     * <tt>_local</tt> to prefer local shards, <tt>_primary</tt> to execute only on primary shards, or
-     * a custom value, which guarantees that the same order will be used across different requests.
+     * <tt>_local</tt> to prefer local shards or a custom value, which guarantees that the same order
+     * will be used across different requests.
      */
     public MultiGetShardRequest preference(String preference) {
         this.preference = preference;
@@ -84,11 +82,6 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
 
     public MultiGetShardRequest realtime(boolean realtime) {
         this.realtime = realtime;
-        return this;
-    }
-
-    public MultiGetShardRequest ignoreErrorsOnGeneratedFields(Boolean ignoreErrorsOnGeneratedFields) {
-        this.ignoreErrorsOnGeneratedFields = ignoreErrorsOnGeneratedFields;
         return this;
     }
 
@@ -130,7 +123,6 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
         preference = in.readOptionalString();
         refresh = in.readBoolean();
         realtime = in.readBoolean();
-        ignoreErrorsOnGeneratedFields = in.readBoolean();
     }
 
     @Override
@@ -146,11 +138,5 @@ public class MultiGetShardRequest extends SingleShardRequest<MultiGetShardReques
         out.writeOptionalString(preference);
         out.writeBoolean(refresh);
         out.writeBoolean(realtime);
-        out.writeBoolean(ignoreErrorsOnGeneratedFields);
-
-    }
-
-    public boolean ignoreErrorsOnGeneratedFields() {
-        return ignoreErrorsOnGeneratedFields;
     }
 }

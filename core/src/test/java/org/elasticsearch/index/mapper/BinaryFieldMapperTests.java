@@ -20,28 +20,37 @@
 package org.elasticsearch.index.mapper;
 
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.Version;
+import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.compress.CompressorFactory;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.index.mapper.BinaryFieldMapper;
-import org.elasticsearch.index.mapper.DocumentMapper;
-import org.elasticsearch.index.mapper.FieldMapper;
-import org.elasticsearch.index.mapper.ParsedDocument;
+import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESSingleNodeTestCase;
+import org.elasticsearch.test.InternalSettingsPlugin;
+import org.elasticsearch.test.VersionUtils;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
 
+import static com.carrotsearch.randomizedtesting.RandomizedTest.getRandom;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 
-/**
- */
 public class BinaryFieldMapperTests extends ESSingleNodeTestCase {
+
+    @Override
+    protected Collection<Class<? extends Plugin>> getPlugins() {
+        return pluginList(InternalSettingsPlugin.class);
+    }
 
     public void testDefaultMapping() throws Exception {
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type")
@@ -84,12 +93,26 @@ public class BinaryFieldMapperTests extends ESSingleNodeTestCase {
         assertTrue(CompressorFactory.isCompressed(new BytesArray(binaryValue2)));
 
         for (byte[] value : Arrays.asList(binaryValue1, binaryValue2)) {
-            ParsedDocument doc = mapper.parse("test", "type", "id", XContentFactory.jsonBuilder().startObject().field("field", value).endObject().bytes());
+            ParsedDocument doc = mapper.parse(SourceToParse.source("test", "type", "id", 
+                    XContentFactory.jsonBuilder().startObject().field("field", value).endObject().bytes(),
+                    XContentType.JSON));
             BytesRef indexedValue = doc.rootDoc().getBinaryValue("field");
             assertEquals(new BytesRef(value), indexedValue);
             FieldMapper fieldMapper = mapper.mappers().smartNameFieldMapper("field");
-            Object originalValue = fieldMapper.fieldType().valueForSearch(indexedValue);
+            Object originalValue = fieldMapper.fieldType().valueForDisplay(indexedValue);
             assertEquals(new BytesArray(value), originalValue);
         }
+    }
+
+    public void testEmptyName() throws IOException {
+        // after 5.x
+        String mapping = XContentFactory.jsonBuilder().startObject().startObject("type")
+            .startObject("properties").startObject("").field("type", "binary").endObject().endObject()
+            .endObject().endObject().string();
+
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class,
+            () -> createIndex("test").mapperService().documentMapperParser().parse("type", new CompressedXContent(mapping))
+        );
+        assertThat(e.getMessage(), containsString("name cannot be empty string"));
     }
 }

@@ -18,6 +18,8 @@
  */
 package org.elasticsearch.tasks;
 
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.util.Supplier;
 import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
@@ -40,7 +42,8 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.indices.IndexAlreadyExistsException;
+import org.elasticsearch.ResourceAlreadyExistsException;
+import org.elasticsearch.common.xcontent.XContentType;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -80,7 +83,7 @@ public class TaskResultsService extends AbstractComponent {
             CreateIndexRequest createIndexRequest = new CreateIndexRequest();
             createIndexRequest.settings(taskResultIndexSettings());
             createIndexRequest.index(TASK_INDEX);
-            createIndexRequest.mapping(TASK_TYPE, taskResultIndexMapping());
+            createIndexRequest.mapping(TASK_TYPE, taskResultIndexMapping(), XContentType.JSON);
             createIndexRequest.cause("auto(task api)");
 
             createIndexAction.execute(null, createIndexRequest, new ActionListener<CreateIndexResponse>() {
@@ -91,7 +94,7 @@ public class TaskResultsService extends AbstractComponent {
 
                 @Override
                 public void onFailure(Exception e) {
-                    if (ExceptionsHelper.unwrapCause(e) instanceof IndexAlreadyExistsException) {
+                    if (ExceptionsHelper.unwrapCause(e) instanceof ResourceAlreadyExistsException) {
                         // we have the index, do it
                         try {
                             doStoreResult(taskResult, listener);
@@ -108,7 +111,8 @@ public class TaskResultsService extends AbstractComponent {
             IndexMetaData metaData = state.getMetaData().index(TASK_INDEX);
             if (metaData.getMappings().containsKey(TASK_TYPE) == false) {
                 // The index already exists but doesn't have our mapping
-                client.admin().indices().preparePutMapping(TASK_INDEX).setType(TASK_TYPE).setSource(taskResultIndexMapping())
+                client.admin().indices().preparePutMapping(TASK_INDEX).setType(TASK_TYPE)
+                    .setSource(taskResultIndexMapping(), XContentType.JSON)
                     .execute(new ActionListener<PutMappingResponse>() {
                                  @Override
                                  public void onResponse(PutMappingResponse putMappingResponse) {
@@ -163,7 +167,9 @@ public class TaskResultsService extends AbstractComponent {
             Streams.copy(is, out);
             return out.toString(IOUtils.UTF_8);
         } catch (Exception e) {
-            logger.error("failed to create tasks results index template [{}]", e, TASK_RESULT_INDEX_MAPPING_FILE);
+            logger.error(
+                (Supplier<?>) () -> new ParameterizedMessage(
+                    "failed to create tasks results index template [{}]", TASK_RESULT_INDEX_MAPPING_FILE), e);
             throw new IllegalStateException("failed to create tasks results index template [" + TASK_RESULT_INDEX_MAPPING_FILE + "]", e);
         }
 

@@ -22,9 +22,6 @@ package org.elasticsearch.gateway;
 import org.elasticsearch.common.inject.AbstractModule;
 import org.elasticsearch.common.settings.Settings;
 
-/**
- *
- */
 public class GatewayModule extends AbstractModule {
 
 
@@ -33,7 +30,6 @@ public class GatewayModule extends AbstractModule {
         bind(DanglingIndicesState.class).asEagerSingleton();
         bind(GatewayService.class).asEagerSingleton();
         bind(TransportNodesListGatewayMetaState.class).asEagerSingleton();
-        bind(GatewayMetaState.class).asEagerSingleton();
         bind(TransportNodesListGatewayStartedShards.class).asEagerSingleton();
         bind(LocalAllocateDangledIndices.class).asEagerSingleton();
     }

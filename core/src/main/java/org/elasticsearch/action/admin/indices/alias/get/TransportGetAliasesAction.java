@@ -35,14 +35,12 @@ import org.elasticsearch.transport.TransportService;
 
 import java.util.List;
 
-/**
- */
 public class TransportGetAliasesAction extends TransportMasterNodeReadAction<GetAliasesRequest, GetAliasesResponse> {
 
     @Inject
     public TransportGetAliasesAction(Settings settings, TransportService transportService, ClusterService clusterService,
                                      ThreadPool threadPool, ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
-        super(settings, GetAliasesAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, GetAliasesRequest::new);
+        super(settings, GetAliasesAction.NAME, transportService, clusterService, threadPool, actionFilters, GetAliasesRequest::new, indexNameExpressionResolver);
     }
 
     @Override

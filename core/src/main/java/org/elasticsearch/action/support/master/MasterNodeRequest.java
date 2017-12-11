@@ -29,13 +29,24 @@ import java.io.IOException;
 /**
  * A based request for master based operation.
  */
-public abstract class MasterNodeRequest<Request extends MasterNodeRequest<Request>> extends ActionRequest<Request> {
+public abstract class MasterNodeRequest<Request extends MasterNodeRequest<Request>> extends ActionRequest {
 
     public static final TimeValue DEFAULT_MASTER_NODE_TIMEOUT = TimeValue.timeValueSeconds(30);
 
     protected TimeValue masterNodeTimeout = DEFAULT_MASTER_NODE_TIMEOUT;
 
     protected MasterNodeRequest() {
+    }
+
+    protected MasterNodeRequest(StreamInput in) throws IOException {
+        super(in);
+        masterNodeTimeout = new TimeValue(in);
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        super.writeTo(out);
+        masterNodeTimeout.writeTo(out);
     }
 
     /**
@@ -60,13 +71,9 @@ public abstract class MasterNodeRequest<Request extends MasterNodeRequest<Reques
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
+        // TODO(talevy): throw exception once all MasterNodeRequest
+        //               subclasses have been migrated to Writeable Readers
         super.readFrom(in);
         masterNodeTimeout = new TimeValue(in);
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        super.writeTo(out);
-        masterNodeTimeout.writeTo(out);
     }
 }

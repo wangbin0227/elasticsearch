@@ -18,6 +18,8 @@
  */
 package org.elasticsearch.test.rest.yaml.restspec;
 
+import org.elasticsearch.common.ParseField;
+import org.elasticsearch.common.xcontent.ObjectParser;
 import org.elasticsearch.common.xcontent.XContentParser;
 
 import java.io.IOException;
@@ -27,13 +29,23 @@ import java.io.IOException;
  */
 public class ClientYamlSuiteRestApiParser {
 
+    private static final ObjectParser<Parameter, Void> PARAMETER_PARSER = new ObjectParser<>("parameter", true, Parameter::new);
+    static {
+        PARAMETER_PARSER.declareBoolean(Parameter::setRequired, new ParseField("required"));
+    }
+
     public ClientYamlSuiteRestApi parse(String location, XContentParser parser) throws IOException {
 
         while ( parser.nextToken() != XContentParser.Token.FIELD_NAME ) {
             //move to first field name
         }
 
-        ClientYamlSuiteRestApi restApi = new ClientYamlSuiteRestApi(location, parser.currentName());
+        String apiName = parser.currentName();
+        if (location.endsWith(apiName + ".json") == false) {
+            throw new IllegalArgumentException("API [" + apiName + "] should have the same name as its file [" + location + "]");
+        }
+
+        ClientYamlSuiteRestApi restApi = new ClientYamlSuiteRestApi(location, apiName);
 
         int level = -1;
         while (parser.nextToken() != XContentParser.Token.END_OBJECT || level >= 0) {
@@ -42,7 +54,11 @@ public class ClientYamlSuiteRestApiParser {
                 if ("methods".equals(parser.currentName())) {
                     parser.nextToken();
                     while (parser.nextToken() == XContentParser.Token.VALUE_STRING) {
-                        restApi.addMethod(parser.text());
+                        String method = parser.text();
+                        if (restApi.getMethods().contains(method)) {
+                            throw new IllegalArgumentException("Found duplicate method [" + method + "]");
+                        }
+                        restApi.addMethod(method);
                     }
                 }
 
@@ -53,32 +69,43 @@ public class ClientYamlSuiteRestApiParser {
                         if (parser.currentToken() == XContentParser.Token.FIELD_NAME) {
                             currentFieldName = parser.currentName();
                         }
-
                         if (parser.currentToken() == XContentParser.Token.START_ARRAY && "paths".equals(currentFieldName)) {
                             while (parser.nextToken() == XContentParser.Token.VALUE_STRING) {
-                                restApi.addPath(parser.text());
+                                String path = parser.text();
+                                if (restApi.getPaths().contains(path)) {
+                                    throw new IllegalArgumentException("Found duplicate path [" + path + "]");
+                                }
+                                restApi.addPath(path);
                             }
                         }
 
                         if (parser.currentToken() == XContentParser.Token.START_OBJECT && "parts".equals(currentFieldName)) {
                             while (parser.nextToken() == XContentParser.Token.FIELD_NAME) {
-                                restApi.addPathPart(parser.currentName());
+                                String part = parser.currentName();
+                                if (restApi.getPathParts().containsKey(part)) {
+                                    throw new IllegalArgumentException("Found duplicate part [" + part + "]");
+                                }
                                 parser.nextToken();
                                 if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
-                                    throw new IOException("Expected parts field in rest api definition to contain an object");
+                                    throw new IllegalArgumentException("Expected parts field in rest api definition to contain an object");
                                 }
-                                parser.skipChildren();
+                                restApi.addPathPart(part, PARAMETER_PARSER.parse(parser, null).isRequired());
                             }
                         }
 
                         if (parser.currentToken() == XContentParser.Token.START_OBJECT && "params".equals(currentFieldName)) {
                             while (parser.nextToken() == XContentParser.Token.FIELD_NAME) {
-                                restApi.addParam(parser.currentName());
+                                
+                                String param = parser.currentName();
+                                if (restApi.getParams().containsKey(param)) {
+                                    throw new IllegalArgumentException("Found duplicate param [" + param + "]");
+                                }
+                                
                                 parser.nextToken();
                                 if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
-                                    throw new IOException("Expected params field in rest api definition to contain an object");
+                                    throw new IllegalArgumentException("Expected params field in rest api definition to contain an object");
                                 }
-                                parser.skipChildren();
+                                restApi.addParam(param, PARAMETER_PARSER.parse(parser, null).isRequired());
                             }
                         }
 
@@ -108,7 +135,7 @@ public class ClientYamlSuiteRestApiParser {
                                 }
                             }
                         }
-                        if (!requiredFound) {
+                        if (false == requiredFound) {
                             restApi.setBodyOptional();
                         }
                     }
@@ -129,5 +156,15 @@ public class ClientYamlSuiteRestApiParser {
         parser.nextToken();
 
         return restApi;
+    }
+
+    private static class Parameter {
+        private boolean required;
+        public boolean isRequired() {
+            return required;
+        }
+        public void setRequired(boolean required) {
+            this.required = required;
+        }
     }
 }

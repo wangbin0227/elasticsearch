@@ -19,52 +19,58 @@
 
 package org.elasticsearch.discovery;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Streamable;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.discovery.zen.publish.PendingClusterStateStats;
+import org.elasticsearch.discovery.zen.PendingClusterStateStats;
+import org.elasticsearch.discovery.zen.PublishClusterStateStats;
 
 import java.io.IOException;
 
-public class DiscoveryStats implements Streamable, ToXContent {
+public class DiscoveryStats implements Writeable, ToXContentFragment {
 
-    @Nullable
-    private PendingClusterStateStats queueStats;
+    private final PendingClusterStateStats queueStats;
+    private final PublishClusterStateStats publishStats;
 
-    public DiscoveryStats(PendingClusterStateStats queueStats) {
+    public DiscoveryStats(PendingClusterStateStats queueStats, PublishClusterStateStats publishStats) {
         this.queueStats = queueStats;
+        this.publishStats = publishStats;
     }
 
-    @Override
-    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject(Fields.DISCOVERY);
+    public DiscoveryStats(StreamInput in) throws IOException {
+        queueStats = in.readOptionalWriteable(PendingClusterStateStats::new);
 
-        if (queueStats != null ){
-            queueStats.toXContent(builder, params);
-        }
-        builder.endObject();
-        return builder;
-    }
-
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        if (in.readBoolean()) {
-            queueStats = new PendingClusterStateStats();
-            queueStats.readFrom(in);
+        if (in.getVersion().onOrAfter(Version.V_6_1_0)) {
+            publishStats = in.readOptionalWriteable(PublishClusterStateStats::new);
+        } else {
+            publishStats = null;
         }
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        if (queueStats != null ) {
-            out.writeBoolean(true);
-            queueStats.writeTo(out);
-        }else{
-            out.writeBoolean(false);
+        out.writeOptionalWriteable(queueStats);
+
+        if (out.getVersion().onOrAfter(Version.V_6_1_0)) {
+            out.writeOptionalWriteable(publishStats);
         }
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        builder.startObject(Fields.DISCOVERY);
+        if (queueStats != null) {
+            queueStats.toXContent(builder, params);
+        }
+        if (publishStats != null) {
+            publishStats.toXContent(builder, params);
+        }
+        builder.endObject();
+        return builder;
     }
 
     static final class Fields {
@@ -73,5 +79,9 @@ public class DiscoveryStats implements Streamable, ToXContent {
 
     public PendingClusterStateStats getQueueStats() {
         return queueStats;
+    }
+
+    public PublishClusterStateStats getPublishStats() {
+        return publishStats;
     }
 }

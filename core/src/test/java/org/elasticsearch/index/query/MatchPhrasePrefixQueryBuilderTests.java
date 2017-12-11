@@ -20,12 +20,14 @@
 package org.elasticsearch.index.query;
 
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.IndexOrDocValuesQuery;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PointRangeQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.elasticsearch.common.ParsingException;
-import org.elasticsearch.common.lucene.search.MatchNoDocsQuery;
 import org.elasticsearch.common.lucene.search.MultiPhrasePrefixQuery;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.AbstractQueryTestCase;
 
 import java.io.IOException;
@@ -50,7 +52,7 @@ public class MatchPhrasePrefixQueryBuilderTests extends AbstractQueryTestCase<Ma
             int terms = randomIntBetween(0, 3);
             StringBuilder builder = new StringBuilder();
             for (int i = 0; i < terms; i++) {
-                builder.append(randomAsciiOfLengthBetween(1, 10)).append(" ");
+                builder.append(randomAlphaOfLengthBetween(1, 10)).append(" ");
             }
             value = builder.toString().trim();
         } else {
@@ -76,8 +78,8 @@ public class MatchPhrasePrefixQueryBuilderTests extends AbstractQueryTestCase<Ma
     @Override
     protected Map<String, MatchPhrasePrefixQueryBuilder> getAlternateVersions() {
         Map<String, MatchPhrasePrefixQueryBuilder> alternateVersions = new HashMap<>();
-        MatchPhrasePrefixQueryBuilder matchPhrasePrefixQuery = new MatchPhrasePrefixQueryBuilder(randomAsciiOfLengthBetween(1, 10),
-                randomAsciiOfLengthBetween(1, 10));
+        MatchPhrasePrefixQueryBuilder matchPhrasePrefixQuery = new MatchPhrasePrefixQueryBuilder(randomAlphaOfLengthBetween(1, 10),
+                randomAlphaOfLengthBetween(1, 10));
         String contentString = "{\n" +
                 "    \"match_phrase_prefix\" : {\n" +
                 "        \"" + matchPhrasePrefixQuery.fieldName() + "\" : \"" + matchPhrasePrefixQuery.value() + "\"\n" +
@@ -88,12 +90,13 @@ public class MatchPhrasePrefixQueryBuilderTests extends AbstractQueryTestCase<Ma
     }
 
     @Override
-    protected void doAssertLuceneQuery(MatchPhrasePrefixQueryBuilder queryBuilder, Query query, QueryShardContext context)
+    protected void doAssertLuceneQuery(MatchPhrasePrefixQueryBuilder queryBuilder, Query query, SearchContext context)
             throws IOException {
         assertThat(query, notNullValue());
         assertThat(query,
                 either(instanceOf(BooleanQuery.class)).or(instanceOf(MultiPhrasePrefixQuery.class))
-                .or(instanceOf(TermQuery.class)).or(instanceOf(PointRangeQuery.class)).or(instanceOf(MatchNoDocsQuery.class)));
+                .or(instanceOf(TermQuery.class)).or(instanceOf(PointRangeQuery.class))
+                .or(instanceOf(IndexOrDocValuesQuery.class)).or(instanceOf(MatchNoDocsQuery.class)));
     }
 
     public void testIllegalValues() {

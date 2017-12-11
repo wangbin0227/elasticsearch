@@ -18,6 +18,8 @@
  */
 package org.elasticsearch.action.admin.indices.template.put;
 
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.master.TransportMasterNodeAction;
@@ -64,7 +66,7 @@ public class TransportPutIndexTemplateAction extends TransportMasterNodeAction<P
 
     @Override
     protected ClusterBlockException checkBlock(PutIndexTemplateRequest request, ClusterState state) {
-        return state.blocks().indexBlockedException(ClusterBlockLevel.METADATA_WRITE, "");
+        return state.blocks().globalBlockedException(ClusterBlockLevel.METADATA_WRITE);
     }
 
     @Override
@@ -75,16 +77,17 @@ public class TransportPutIndexTemplateAction extends TransportMasterNodeAction<P
         }
         final Settings.Builder templateSettingsBuilder = Settings.builder();
         templateSettingsBuilder.put(request.settings()).normalizePrefix(IndexMetaData.INDEX_SETTING_PREFIX);
-        indexScopedSettings.validate(templateSettingsBuilder);
+        indexScopedSettings.validate(templateSettingsBuilder.build(), true); // templates must be consistent with regards to dependencies
         indexTemplateService.putTemplate(new MetaDataIndexTemplateService.PutRequest(cause, request.name())
-                .template(request.template())
+                .patterns(request.patterns())
                 .order(request.order())
                 .settings(templateSettingsBuilder.build())
                 .mappings(request.mappings())
                 .aliases(request.aliases())
                 .customs(request.customs())
                 .create(request.create())
-                .masterTimeout(request.masterNodeTimeout()),
+                .masterTimeout(request.masterNodeTimeout())
+                .version(request.version()),
 
                 new MetaDataIndexTemplateService.PutListener() {
                     @Override
@@ -94,7 +97,7 @@ public class TransportPutIndexTemplateAction extends TransportMasterNodeAction<P
 
                     @Override
                     public void onFailure(Exception e) {
-                        logger.debug("failed to put template [{}]", e, request.name());
+                        logger.debug((Supplier<?>) () -> new ParameterizedMessage("failed to put template [{}]", request.name()), e);
                         listener.onFailure(e);
                     }
                 });

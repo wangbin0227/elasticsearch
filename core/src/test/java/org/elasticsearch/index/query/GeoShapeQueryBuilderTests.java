@@ -20,6 +20,7 @@
 package org.elasticsearch.index.query;
 
 import com.vividsolutions.jts.geom.Coordinate;
+
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -32,11 +33,12 @@ import org.elasticsearch.common.geo.ShapeRelation;
 import org.elasticsearch.common.geo.SpatialStrategy;
 import org.elasticsearch.common.geo.builders.EnvelopeBuilder;
 import org.elasticsearch.common.geo.builders.ShapeBuilder;
-import org.elasticsearch.common.geo.builders.ShapeBuilders;
+import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.index.get.GetResult;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.AbstractQueryTestCase;
 import org.elasticsearch.test.geo.RandomShapeGenerator;
 import org.elasticsearch.test.geo.RandomShapeGenerator.ShapeType;
@@ -60,24 +62,26 @@ public class GeoShapeQueryBuilderTests extends AbstractQueryTestCase<GeoShapeQue
 
     @Override
     protected GeoShapeQueryBuilder doCreateTestQueryBuilder() {
+        return doCreateTestQueryBuilder(randomBoolean());
+    }
+    private GeoShapeQueryBuilder doCreateTestQueryBuilder(boolean indexedShape) {
         ShapeType shapeType = ShapeType.randomType(random());
         ShapeBuilder shape = RandomShapeGenerator.createShapeWithin(random(), null, shapeType);
-
         GeoShapeQueryBuilder builder;
         clearShapeFields();
-        if (randomBoolean()) {
+        if (indexedShape == false) {
             builder = new GeoShapeQueryBuilder(GEO_SHAPE_FIELD_NAME, shape);
         } else {
             indexedShapeToReturn = shape;
-            indexedShapeId = randomAsciiOfLengthBetween(3, 20);
-            indexedShapeType = randomAsciiOfLengthBetween(3, 20);
+            indexedShapeId = randomAlphaOfLengthBetween(3, 20);
+            indexedShapeType = randomAlphaOfLengthBetween(3, 20);
             builder = new GeoShapeQueryBuilder(GEO_SHAPE_FIELD_NAME, indexedShapeId, indexedShapeType);
             if (randomBoolean()) {
-                indexedShapeIndex = randomAsciiOfLengthBetween(3, 20);
+                indexedShapeIndex = randomAlphaOfLengthBetween(3, 20);
                 builder.indexedShapeIndex(indexedShapeIndex);
             }
             if (randomBoolean()) {
-                indexedShapePath = randomAsciiOfLengthBetween(3, 20);
+                indexedShapePath = randomAlphaOfLengthBetween(3, 20);
                 builder.indexedShapePath(indexedShapePath);
             }
         }
@@ -133,7 +137,7 @@ public class GeoShapeQueryBuilderTests extends AbstractQueryTestCase<GeoShapeQue
     }
 
     @Override
-    protected void doAssertLuceneQuery(GeoShapeQueryBuilder queryBuilder, Query query, QueryShardContext context) throws IOException {
+    protected void doAssertLuceneQuery(GeoShapeQueryBuilder queryBuilder, Query query, SearchContext context) throws IOException {
         // Logic for doToQuery is complex and is hard to test here. Need to rely
         // on Integration tests to determine if created query is correct
         // TODO improve GeoShapeQueryBuilder.doToQuery() method to make it
@@ -196,7 +200,7 @@ public class GeoShapeQueryBuilderTests extends AbstractQueryTestCase<GeoShapeQue
 
     // see #3878
     public void testThatXContentSerializationInsideOfArrayWorks() throws Exception {
-        EnvelopeBuilder envelopeBuilder = ShapeBuilders.newEnvelope(new Coordinate(0, 0), new Coordinate(10, 10));
+        EnvelopeBuilder envelopeBuilder = new EnvelopeBuilder(new Coordinate(0, 0), new Coordinate(10, 10));
         GeoShapeQueryBuilder geoQuery = QueryBuilders.geoShapeQuery("searchGeometry", envelopeBuilder);
         JsonXContent.contentBuilder().startArray().value(geoQuery).endArray();
     }
@@ -233,7 +237,7 @@ public class GeoShapeQueryBuilderTests extends AbstractQueryTestCase<GeoShapeQue
 
         UnsupportedOperationException e = expectThrows(UnsupportedOperationException.class, () -> query.toQuery(createShardContext()));
         assertEquals("query must be rewritten first", e.getMessage());
-        QueryBuilder rewrite = query.rewrite(createShardContext());
+        QueryBuilder rewrite = rewriteAndFetch(query, createShardContext());
         GeoShapeQueryBuilder geoShapeQueryBuilder = new GeoShapeQueryBuilder(GEO_SHAPE_FIELD_NAME, indexedShapeToReturn);
         geoShapeQueryBuilder.strategy(query.strategy());
         geoShapeQueryBuilder.relation(query.relation());
@@ -253,5 +257,23 @@ public class GeoShapeQueryBuilderTests extends AbstractQueryTestCase<GeoShapeQue
         failingQueryBuilder.ignoreUnmapped(false);
         QueryShardException e = expectThrows(QueryShardException.class, () -> failingQueryBuilder.toQuery(createShardContext()));
         assertThat(e.getMessage(), containsString("failed to find geo_shape field [unmapped]"));
+    }
+
+    public void testWrongFieldType() throws IOException {
+        assumeTrue("test runs only when at least a type is registered", getCurrentTypes().length > 0);
+        ShapeType shapeType = ShapeType.randomType(random());
+        ShapeBuilder shape = RandomShapeGenerator.createShapeWithin(random(), null, shapeType);
+        final GeoShapeQueryBuilder queryBuilder = new GeoShapeQueryBuilder(STRING_FIELD_NAME, shape);
+        QueryShardException e = expectThrows(QueryShardException.class, () -> queryBuilder.toQuery(createShardContext()));
+        assertThat(e.getMessage(), containsString("Field [mapped_string] is not of type [geo_shape] but of type [text]"));
+    }
+
+    public void testSerializationFailsUnlessFetched() throws IOException {
+        QueryBuilder builder = doCreateTestQueryBuilder(true);
+        QueryBuilder queryBuilder = Rewriteable.rewrite(builder, createShardContext());
+        IllegalStateException ise = expectThrows(IllegalStateException.class, () -> queryBuilder.writeTo(new BytesStreamOutput(10)));
+        assertEquals(ise.getMessage(), "supplier must be null, can't serialize suppliers, missing a rewriteAndFetch?");
+        builder = rewriteAndFetch(builder, createShardContext());
+        builder.writeTo(new BytesStreamOutput(10));
     }
 }

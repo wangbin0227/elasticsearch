@@ -23,12 +23,10 @@ import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.get.GetRequest;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.node.NodeClient;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.BytesRestResponse;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.RestResponse;
@@ -38,50 +36,59 @@ import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import java.io.IOException;
 
 import static org.elasticsearch.rest.RestRequest.Method.GET;
+import static org.elasticsearch.rest.RestRequest.Method.HEAD;
 import static org.elasticsearch.rest.RestStatus.NOT_FOUND;
 import static org.elasticsearch.rest.RestStatus.OK;
 
+/**
+ * The REST handler for get source and head source APIs.
+ */
 public class RestGetSourceAction extends BaseRestHandler {
 
-    @Inject
-    public RestGetSourceAction(Settings settings, RestController controller) {
+    public RestGetSourceAction(final Settings settings, final RestController controller) {
         super(settings);
         controller.registerHandler(GET, "/{index}/{type}/{id}/_source", this);
+        controller.registerHandler(HEAD, "/{index}/{type}/{id}/_source", this);
     }
 
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) {
+    public String getName() {
+        return "document_get_source_action";
+    }
+
+    @Override
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         final GetRequest getRequest = new GetRequest(request.param("index"), request.param("type"), request.param("id"));
         getRequest.operationThreaded(true);
         getRequest.refresh(request.paramAsBoolean("refresh", getRequest.refresh()));
-        getRequest.routing(request.param("routing"));  // order is important, set it after routing, so it will set the routing
+        getRequest.routing(request.param("routing"));
         getRequest.parent(request.param("parent"));
         getRequest.preference(request.param("preference"));
         getRequest.realtime(request.paramAsBoolean("realtime", getRequest.realtime()));
 
         getRequest.fetchSourceContext(FetchSourceContext.parseFromRestRequest(request));
 
-        if (getRequest.fetchSourceContext() != null && !getRequest.fetchSourceContext().fetchSource()) {
-            try {
-                ActionRequestValidationException validationError = new ActionRequestValidationException();
+        return channel -> {
+            if (getRequest.fetchSourceContext() != null && !getRequest.fetchSourceContext().fetchSource()) {
+                final ActionRequestValidationException validationError = new ActionRequestValidationException();
                 validationError.addValidationError("fetching source can not be disabled");
                 channel.sendResponse(new BytesRestResponse(channel, validationError));
-            } catch (IOException e) {
-                logger.error("Failed to send failure response", e);
+            } else {
+                client.get(getRequest, new RestResponseListener<GetResponse>(channel) {
+                    @Override
+                    public RestResponse buildResponse(final GetResponse response) throws Exception {
+                        final XContentBuilder builder = channel.newBuilder(request.getXContentType(), false);
+                        // check if doc source (or doc itself) is missing
+                        if (response.isSourceEmpty()) {
+                            return new BytesRestResponse(NOT_FOUND, builder);
+                        } else {
+                            builder.rawValue(response.getSourceInternal());
+                            return new BytesRestResponse(OK, builder);
+                        }
+                    }
+                });
             }
-        }
-
-        client.get(getRequest, new RestResponseListener<GetResponse>(channel) {
-            @Override
-            public RestResponse buildResponse(GetResponse response) throws Exception {
-                XContentBuilder builder = channel.newBuilder(response.getSourceInternal(), false);
-                if (response.isSourceEmpty()) { // check if doc source (or doc itself) is missing
-                    return new BytesRestResponse(NOT_FOUND, builder);
-                } else {
-                    builder.rawValue(response.getSourceInternal());
-                    return new BytesRestResponse(OK, builder);
-                }
-            }
-        });
+        };
     }
+
 }

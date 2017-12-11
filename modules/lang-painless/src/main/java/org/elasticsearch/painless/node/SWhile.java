@@ -59,7 +59,7 @@ public final class SWhile extends AStatement {
     void analyze(Locals locals) {
         locals = Locals.newLocalScope(locals);
 
-        condition.expected = Definition.BOOLEAN_TYPE;
+        condition.expected = locals.getDefinition().booleanType;
         condition.analyze(locals);
         condition = condition.cast(locals);
 
@@ -133,5 +133,10 @@ public final class SWhile extends AStatement {
         }
 
         writer.mark(end);
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(condition, block);
     }
 }

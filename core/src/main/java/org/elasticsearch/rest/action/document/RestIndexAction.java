@@ -22,30 +22,21 @@ package org.elasticsearch.rest.action.document;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.client.node.NodeClient;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.BytesRestResponse;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.RestActions;
 import org.elasticsearch.rest.action.RestStatusToXContentListener;
 
 import java.io.IOException;
+import java.util.Locale;
 
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 import static org.elasticsearch.rest.RestRequest.Method.PUT;
-import static org.elasticsearch.rest.RestStatus.BAD_REQUEST;
 
-/**
- *
- */
 public class RestIndexAction extends BaseRestHandler {
-
-    @Inject
     public RestIndexAction(Settings settings, RestController controller) {
         super(settings);
         controller.registerHandler(POST, "/{index}/{type}", this); // auto id creation
@@ -56,52 +47,57 @@ public class RestIndexAction extends BaseRestHandler {
         controller.registerHandler(POST, "/{index}/{type}/{id}/_create", createHandler);
     }
 
+    @Override
+    public String getName() {
+        return "document_index_action";
+    }
+
     final class CreateHandler extends BaseRestHandler {
         protected CreateHandler(Settings settings) {
             super(settings);
         }
 
         @Override
-        public void handleRequest(RestRequest request, RestChannel channel, final NodeClient client) {
+        public String getName() {
+            return "document_create_action";
+        }
+
+        @Override
+        public RestChannelConsumer prepareRequest(RestRequest request, final NodeClient client) throws IOException {
+            validateOpType(request.params().get("op_type"));
             request.params().put("op_type", "create");
-            RestIndexAction.this.handleRequest(request, channel, client);
+            return RestIndexAction.this.prepareRequest(request, client);
+        }
+
+        void validateOpType(String opType) {
+            if (null != opType && false == "create".equals(opType.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException("opType must be 'create', found: [" + opType + "]");
+            }
         }
     }
 
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) {
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         IndexRequest indexRequest = new IndexRequest(request.param("index"), request.param("type"), request.param("id"));
         indexRequest.routing(request.param("routing"));
-        indexRequest.parent(request.param("parent")); // order is important, set it after routing, so it will set the routing
-        indexRequest.timestamp(request.param("timestamp"));
-        if (request.hasParam("ttl")) {
-            indexRequest.ttl(request.param("ttl"));
-        }
+        indexRequest.parent(request.param("parent"));
         indexRequest.setPipeline(request.param("pipeline"));
-        indexRequest.source(request.content());
+        indexRequest.source(request.requiredContent(), request.getXContentType());
         indexRequest.timeout(request.paramAsTime("timeout", IndexRequest.DEFAULT_TIMEOUT));
         indexRequest.setRefreshPolicy(request.param("refresh"));
         indexRequest.version(RestActions.parseVersion(request));
         indexRequest.versionType(VersionType.fromString(request.param("version_type"), indexRequest.versionType()));
         String sOpType = request.param("op_type");
-        if (sOpType != null) {
-            try {
-                indexRequest.opType(IndexRequest.OpType.fromString(sOpType));
-            } catch (IllegalArgumentException eia){
-                try {
-                    XContentBuilder builder = channel.newErrorBuilder();
-                    channel.sendResponse(
-                            new BytesRestResponse(BAD_REQUEST, builder.startObject().field("error", eia.getMessage()).endObject()));
-                } catch (IOException e1) {
-                    logger.warn("Failed to send response", e1);
-                    return;
-                }
-            }
-        }
         String waitForActiveShards = request.param("wait_for_active_shards");
         if (waitForActiveShards != null) {
             indexRequest.waitForActiveShards(ActiveShardCount.parseString(waitForActiveShards));
         }
-        client.index(indexRequest, new RestStatusToXContentListener<>(channel, r -> r.getLocation(indexRequest.routing())));
+        if (sOpType != null) {
+            indexRequest.opType(sOpType);
+        }
+
+        return channel ->
+                client.index(indexRequest, new RestStatusToXContentListener<>(channel, r -> r.getLocation(indexRequest.routing())));
     }
+
 }

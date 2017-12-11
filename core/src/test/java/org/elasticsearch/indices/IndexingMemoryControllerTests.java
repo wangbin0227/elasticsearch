@@ -23,18 +23,20 @@ import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeResponse;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.LocalTransportAddress;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.shard.IndexSearcherWrapper;
 import org.elasticsearch.index.shard.IndexShard;
-import org.elasticsearch.index.shard.IndexShardTests;
+import org.elasticsearch.index.shard.IndexShardIT;
+import org.elasticsearch.index.shard.IndexShardTestCase;
+import org.elasticsearch.indices.breaker.NoneCircuitBreakerService;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.test.ESSingleNodeTestCase;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.threadpool.ThreadPool.Cancellable;
+import org.elasticsearch.threadpool.Scheduler.Cancellable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -65,7 +67,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         // Shards that are currently throttled
         final Set<IndexShard> throttled = new HashSet<>();
 
-        public MockController(Settings settings) {
+        MockController(Settings settings) {
             super(Settings.builder()
                             .put("indices.memory.interval", "200h") // disable it
                             .put(settings)
@@ -405,14 +407,11 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         imc.forceCheck();
 
         // We must assertBusy because the writeIndexingBufferAsync is done in background (REFRESH) thread pool:
-        assertBusy(new Runnable() {
-            @Override
-            public void run() {
-                try (Engine.Searcher s2 = shard.acquireSearcher("index")) {
-                    // 100 buffered deletes will easily exceed our 1 KB indexing buffer so it should trigger a write:
-                    final long indexingBufferBytes2 = shard.getIndexBufferRAMBytesUsed();
-                    assertTrue(indexingBufferBytes2 < indexingBufferBytes1);
-                }
+        assertBusy(() -> {
+            try (Engine.Searcher s2 = shard.acquireSearcher("index")) {
+                // 100 buffered deletes will easily exceed our 1 KB indexing buffer so it should trigger a write:
+                final long indexingBufferBytes2 = shard.getIndexBufferRAMBytesUsed();
+                assertTrue(indexingBufferBytes2 < indexingBufferBytes1);
             }
         });
     }
@@ -424,7 +423,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
         IndexService indexService = indicesService.indexService(resolveIndex("test"));
         IndexShard shard = indexService.getShardOrNull(0);
         for (int i = 0; i < 100; i++) {
-            client().prepareIndex("test", "test", Integer.toString(i)).setSource("{\"foo\" : \"bar\"}").get();
+            client().prepareIndex("test", "test", Integer.toString(i)).setSource("{\"foo\" : \"bar\"}", XContentType.JSON).get();
         }
 
         IndexSearcherWrapper wrapper = new IndexSearcherWrapper() {};
@@ -442,18 +441,18 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
                 shard.writeIndexingBuffer();
             }
         };
-        final IndexShard newShard = IndexShardTests.newIndexShard(indexService, shard, wrapper, imc);
+        final IndexShard newShard = IndexShardIT.newIndexShard(indexService, shard, wrapper, new NoneCircuitBreakerService(), imc);
         shardRef.set(newShard);
         try {
             assertEquals(0, imc.availableShards().size());
             ShardRouting routing = newShard.routingEntry();
-            DiscoveryNode localNode = new DiscoveryNode("foo", LocalTransportAddress.buildUnique(), emptyMap(), emptySet(), Version.CURRENT);
-            newShard.markAsRecovering("store", new RecoveryState(newShard.shardId(), routing.primary(), RecoveryState.Type.STORE, localNode, localNode));
+            DiscoveryNode localNode = new DiscoveryNode("foo", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT);
+            newShard.markAsRecovering("store", new RecoveryState(routing, localNode, null));
 
             assertEquals(1, imc.availableShards().size());
             assertTrue(newShard.recoverFromStore());
             assertTrue("we should have flushed in IMC at least once but did: " + flushes.get(), flushes.get() >= 1);
-            newShard.updateRoutingEntry(routing.moveToStarted());
+            IndexShardTestCase.updateRoutingEntry(newShard, routing.moveToStarted());
         } finally {
             newShard.close("simon says", false);
         }

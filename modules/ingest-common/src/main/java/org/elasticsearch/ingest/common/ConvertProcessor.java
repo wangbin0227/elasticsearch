@@ -114,12 +114,14 @@ public final class ConvertProcessor extends AbstractProcessor {
     private final String field;
     private final String targetField;
     private final Type convertType;
+    private final boolean ignoreMissing;
 
-    ConvertProcessor(String tag, String field, String targetField, Type convertType) {
+    ConvertProcessor(String tag, String field, String targetField, Type convertType, boolean ignoreMissing) {
         super(tag);
         this.field = field;
         this.targetField = targetField;
         this.convertType = convertType;
+        this.ignoreMissing = ignoreMissing;
     }
 
     String getField() {
@@ -134,17 +136,24 @@ public final class ConvertProcessor extends AbstractProcessor {
         return convertType;
     }
 
+    boolean isIgnoreMissing() {
+        return ignoreMissing;
+    }
+
     @Override
     public void execute(IngestDocument document) {
-        Object oldValue = document.getFieldValue(field, Object.class);
+        Object oldValue = document.getFieldValue(field, Object.class, ignoreMissing);
         Object newValue;
-        if (oldValue == null) {
+
+        if (oldValue == null && ignoreMissing) {
+            return;
+        } else if (oldValue == null) {
             throw new IllegalArgumentException("Field [" + field + "] is null, cannot be converted to type [" + convertType + "]");
         }
 
         if (oldValue instanceof List) {
             List<?> list = (List<?>) oldValue;
-            List<Object> newList = new ArrayList<>();
+            List<Object> newList = new ArrayList<>(list.size());
             for (Object value : list) {
                 newList.add(convertType.convert(value));
             }
@@ -168,7 +177,8 @@ public final class ConvertProcessor extends AbstractProcessor {
             String typeProperty = ConfigurationUtils.readStringProperty(TYPE, processorTag, config, "type");
             String targetField = ConfigurationUtils.readStringProperty(TYPE, processorTag, config, "target_field", field);
             Type convertType = Type.fromString(processorTag, "type", typeProperty);
-            return new ConvertProcessor(processorTag, field, targetField, convertType);
+            boolean ignoreMissing = ConfigurationUtils.readBooleanProperty(TYPE, processorTag, config, "ignore_missing", false);
+            return new ConvertProcessor(processorTag, field, targetField, convertType, ignoreMissing);
         }
     }
 }

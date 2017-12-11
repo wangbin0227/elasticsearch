@@ -50,11 +50,16 @@ public final class EString extends AExpression {
             throw createError(new IllegalArgumentException("Must read from constant [" + constant + "]."));
         }
 
-        actual = Definition.STRING_TYPE;
+        actual = locals.getDefinition().StringType;
     }
 
     @Override
     void write(MethodWriter writer, Globals globals) {
         throw new IllegalStateException("Illegal tree structure.");
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString("'" + constant.toString() + "'");
     }
 }

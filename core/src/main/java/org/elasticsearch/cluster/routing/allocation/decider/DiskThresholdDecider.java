@@ -26,6 +26,7 @@ import org.elasticsearch.cluster.ClusterInfo;
 import org.elasticsearch.cluster.DiskUsage;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
@@ -38,6 +39,9 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
+
+import static org.elasticsearch.cluster.routing.allocation.DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING;
+import static org.elasticsearch.cluster.routing.allocation.DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_LOW_DISK_WATERMARK_SETTING;
 
 /**
  * The {@link DiskThresholdDecider} checks that the node a shard is potentially
@@ -77,11 +81,10 @@ public class DiskThresholdDecider extends AllocationDecider {
      * Returns the size of all shards that are currently being relocated to
      * the node, but may not be finished transferring yet.
      *
-     * If subtractShardsMovingAway is set then the size of shards moving away is subtracted from the total size
-     * of all shards
+     * If subtractShardsMovingAway is true then the size of shards moving away is subtracted from the total size of all shards
      */
     static long sizeOfRelocatingShards(RoutingNode node, RoutingAllocation allocation,
-                                              boolean subtractShardsMovingAway, String dataPath) {
+                                       boolean subtractShardsMovingAway, String dataPath) {
         ClusterInfo clusterInfo = allocation.clusterInfo();
         long totalSize = 0;
         for (ShardRouting routing : node.shardsWithState(ShardRoutingState.RELOCATING, ShardRoutingState.INITIALIZING)) {
@@ -110,7 +113,9 @@ public class DiskThresholdDecider extends AllocationDecider {
         final double usedDiskThresholdLow = 100.0 - diskThresholdSettings.getFreeDiskThresholdLow();
         final double usedDiskThresholdHigh = 100.0 - diskThresholdSettings.getFreeDiskThresholdHigh();
 
-        DiskUsage usage = getDiskUsage(node, allocation, usages);
+        // subtractLeavingShards is passed as false here, because they still use disk space, and therefore should we should be extra careful
+        // and take the size into account
+        DiskUsage usage = getDiskUsage(node, allocation, usages, false);
         // First, check that the node currently over the low watermark
         double freeDiskPercentage = usage.getFreeDiskAsPercentage();
         // Cache the used disk percentage for displaying disk percentages consistent with documentation
@@ -120,22 +125,25 @@ public class DiskThresholdDecider extends AllocationDecider {
             logger.trace("node [{}] has {}% used disk", node.nodeId(), usedDiskPercentage);
         }
 
-        // a flag for whether the primary shard has been previously allocated
-        IndexMetaData indexMetaData = allocation.metaData().getIndexSafe(shardRouting.index());
-        boolean primaryHasBeenAllocated = shardRouting.primary() && shardRouting.allocatedPostIndexCreate(indexMetaData);
+        // flag that determines whether the low threshold checks below can be skipped. We use this for a primary shard that is freshly
+        // allocated and empty.
+        boolean skipLowTresholdChecks = shardRouting.primary() &&
+            shardRouting.active() == false && shardRouting.recoverySource().getType() == RecoverySource.Type.EMPTY_STORE;
 
         // checks for exact byte comparisons
-        if (freeBytes < diskThresholdSettings.getFreeBytesThresholdLow().bytes()) {
-            // If the shard is a replica or has a primary that has already been allocated before, check the low threshold
-            if (!shardRouting.primary() || (shardRouting.primary() && primaryHasBeenAllocated)) {
+        if (freeBytes < diskThresholdSettings.getFreeBytesThresholdLow().getBytes()) {
+            if (skipLowTresholdChecks == false) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("less than the required {} free bytes threshold ({} bytes free) on node {}, preventing allocation",
                             diskThresholdSettings.getFreeBytesThresholdLow(), freeBytes, node.nodeId());
                 }
                 return allocation.decision(Decision.NO, NAME,
-                        "the node is above the low watermark and has less than required [%s] free, free: [%s]",
-                        diskThresholdSettings.getFreeBytesThresholdLow(), new ByteSizeValue(freeBytes));
-            } else if (freeBytes > diskThresholdSettings.getFreeBytesThresholdHigh().bytes()) {
+                    "the node is above the low watermark cluster setting [%s=%s], having less than the minimum required [%s] free " +
+                    "space, actual free: [%s]",
+                    CLUSTER_ROUTING_ALLOCATION_LOW_DISK_WATERMARK_SETTING.getKey(),
+                    diskThresholdSettings.getLowWatermarkRaw(),
+                    diskThresholdSettings.getFreeBytesThresholdLow(), new ByteSizeValue(freeBytes));
+            } else if (freeBytes > diskThresholdSettings.getFreeBytesThresholdHigh().getBytes()) {
                 // Allow the shard to be allocated because it is primary that
                 // has never been allocated if it's under the high watermark
                 if (logger.isDebugEnabled()) {
@@ -144,7 +152,8 @@ public class DiskThresholdDecider extends AllocationDecider {
                             diskThresholdSettings.getFreeBytesThresholdLow(), freeBytes, node.nodeId());
                 }
                 return allocation.decision(Decision.YES, NAME,
-                        "the node is above the low watermark, but this primary shard has never been allocated before");
+                        "the node is above the low watermark, but less than the high watermark, and this primary shard has " +
+                        "never been allocated before");
             } else {
                 // Even though the primary has never been allocated, the node is
                 // above the high watermark, so don't allow allocating the shard
@@ -154,24 +163,28 @@ public class DiskThresholdDecider extends AllocationDecider {
                             diskThresholdSettings.getFreeBytesThresholdHigh(), freeBytes, node.nodeId());
                 }
                 return allocation.decision(Decision.NO, NAME,
-                        "the node is above the high watermark even though this shard has never been allocated " +
-                                "and has less than required [%s] free on node, free: [%s]",
-                        diskThresholdSettings.getFreeBytesThresholdHigh(), new ByteSizeValue(freeBytes));
+                    "the node is above the high watermark cluster setting [%s=%s], having less than the minimum required [%s] free " +
+                    "space, actual free: [%s]",
+                    CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                    diskThresholdSettings.getHighWatermarkRaw(),
+                    diskThresholdSettings.getFreeBytesThresholdHigh(), new ByteSizeValue(freeBytes));
             }
         }
 
         // checks for percentage comparisons
         if (freeDiskPercentage < diskThresholdSettings.getFreeDiskThresholdLow()) {
-            // If the shard is a replica or has a primary that has already been allocated before, check the low threshold
-            if (!shardRouting.primary() || (shardRouting.primary() && primaryHasBeenAllocated)) {
+            // If the shard is a replica or is a non-empty primary, check the low threshold
+            if (skipLowTresholdChecks == false) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("more than the allowed {} used disk threshold ({} used) on node [{}], preventing allocation",
                             Strings.format1Decimals(usedDiskThresholdLow, "%"),
                             Strings.format1Decimals(usedDiskPercentage, "%"), node.nodeId());
                 }
                 return allocation.decision(Decision.NO, NAME,
-                        "the node is above the low watermark and has more than allowed [%s%%] used disk, free: [%s%%]",
-                        usedDiskThresholdLow, freeDiskPercentage);
+                    "the node is above the low watermark cluster setting [%s=%s], using more disk space than the maximum allowed " +
+                    "[%s%%], actual free: [%s%%]",
+                    CLUSTER_ROUTING_ALLOCATION_LOW_DISK_WATERMARK_SETTING.getKey(),
+                    diskThresholdSettings.getLowWatermarkRaw(), usedDiskThresholdLow, freeDiskPercentage);
             } else if (freeDiskPercentage > diskThresholdSettings.getFreeDiskThresholdHigh()) {
                 // Allow the shard to be allocated because it is primary that
                 // has never been allocated if it's under the high watermark
@@ -182,7 +195,8 @@ public class DiskThresholdDecider extends AllocationDecider {
                             Strings.format1Decimals(usedDiskPercentage, "%"), node.nodeId());
                 }
                 return allocation.decision(Decision.YES, NAME,
-                        "the node is above the low watermark, but this primary shard has never been allocated before");
+                    "the node is above the low watermark, but less than the high watermark, and this primary shard has " +
+                    "never been allocated before");
             } else {
                 // Even though the primary has never been allocated, the node is
                 // above the high watermark, so don't allow allocating the shard
@@ -193,9 +207,10 @@ public class DiskThresholdDecider extends AllocationDecider {
                             Strings.format1Decimals(freeDiskPercentage, "%"), node.nodeId());
                 }
                 return allocation.decision(Decision.NO, NAME,
-                        "the node is above the high watermark even though this shard has never been allocated " +
-                                "and has more than allowed [%s%%] used disk, free: [%s%%]",
-                        usedDiskThresholdHigh, freeDiskPercentage);
+                    "the node is above the high watermark cluster setting [%s=%s], using more disk space than the maximum allowed " +
+                    "[%s%%], actual free: [%s%%]",
+                    CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                    diskThresholdSettings.getHighWatermarkRaw(), usedDiskThresholdHigh, freeDiskPercentage);
             }
         }
 
@@ -203,14 +218,16 @@ public class DiskThresholdDecider extends AllocationDecider {
         final long shardSize = getExpectedShardSize(shardRouting, allocation, 0);
         double freeSpaceAfterShard = freeDiskPercentageAfterShardAssigned(usage, shardSize);
         long freeBytesAfterShard = freeBytes - shardSize;
-        if (freeBytesAfterShard < diskThresholdSettings.getFreeBytesThresholdHigh().bytes()) {
+        if (freeBytesAfterShard < diskThresholdSettings.getFreeBytesThresholdHigh().getBytes()) {
             logger.warn("after allocating, node [{}] would have less than the required " +
                     "{} free bytes threshold ({} bytes free), preventing allocation",
                     node.nodeId(), diskThresholdSettings.getFreeBytesThresholdHigh(), freeBytesAfterShard);
             return allocation.decision(Decision.NO, NAME,
-                    "after allocating the shard to this node, it would be above the high watermark " +
-                            "and have less than required [%s] free, free: [%s]",
-                    diskThresholdSettings.getFreeBytesThresholdLow(), new ByteSizeValue(freeBytesAfterShard));
+                "allocating the shard to this node will bring the node above the high watermark cluster setting [%s=%s] " +
+                    "and cause it to have less than the minimum required [%s] of free space (free bytes after shard added: [%s])",
+                CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                diskThresholdSettings.getHighWatermarkRaw(),
+                diskThresholdSettings.getFreeBytesThresholdHigh(), new ByteSizeValue(freeBytesAfterShard));
         }
         if (freeSpaceAfterShard < diskThresholdSettings.getFreeDiskThresholdHigh()) {
             logger.warn("after allocating, node [{}] would have more than the allowed " +
@@ -218,9 +235,10 @@ public class DiskThresholdDecider extends AllocationDecider {
                     node.nodeId(), Strings.format1Decimals(diskThresholdSettings.getFreeDiskThresholdHigh(), "%"),
                                                            Strings.format1Decimals(freeSpaceAfterShard, "%"));
             return allocation.decision(Decision.NO, NAME,
-                    "after allocating the shard to this node, it would be above the high watermark " +
-                            "and have more than allowed [%s%%] used disk, free: [%s%%]",
-                    usedDiskThresholdLow, freeSpaceAfterShard);
+                "allocating the shard to this node will bring the node above the high watermark cluster setting [%s=%s] " +
+                    "and cause it to use more disk space than the maximum allowed [%s%%] (free space after shard added: [%s%%])",
+                CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                diskThresholdSettings.getHighWatermarkRaw(), usedDiskThresholdHigh, freeSpaceAfterShard);
         }
 
         return allocation.decision(Decision.YES, NAME,
@@ -242,7 +260,9 @@ public class DiskThresholdDecider extends AllocationDecider {
             return decision;
         }
 
-        final DiskUsage usage = getDiskUsage(node, allocation, usages);
+        // subtractLeavingShards is passed as true here, since this is only for shards remaining, we will *eventually* have enough disk
+        // since shards are moving away. No new shards will be incoming since in canAllocate we pass false for this check.
+        final DiskUsage usage = getDiskUsage(node, allocation, usages, true);
         final String dataPath = clusterInfo.getDataPath(shardRouting);
         // If this node is already above the high threshold, the shard cannot remain (get it off!)
         final double freeDiskPercentage = usage.getFreeDiskAsPercentage();
@@ -254,15 +274,17 @@ public class DiskThresholdDecider extends AllocationDecider {
             return allocation.decision(Decision.YES, NAME,
                     "this shard is not allocated on the most utilized disk and can remain");
         }
-        if (freeBytes < diskThresholdSettings.getFreeBytesThresholdHigh().bytes()) {
+        if (freeBytes < diskThresholdSettings.getFreeBytesThresholdHigh().getBytes()) {
             if (logger.isDebugEnabled()) {
                 logger.debug("less than the required {} free bytes threshold ({} bytes free) on node {}, shard cannot remain",
                         diskThresholdSettings.getFreeBytesThresholdHigh(), freeBytes, node.nodeId());
             }
             return allocation.decision(Decision.NO, NAME,
-                    "after allocating this shard this node would be above the high watermark " +
-                            "and there would be less than required [%s] free on node, free: [%s]",
-                    diskThresholdSettings.getFreeBytesThresholdHigh(), new ByteSizeValue(freeBytes));
+                "the shard cannot remain on this node because it is above the high watermark cluster setting [%s=%s] " +
+                    "and there is less than the required [%s] free space on node, actual free: [%s]",
+                CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                diskThresholdSettings.getHighWatermarkRaw(),
+                diskThresholdSettings.getFreeBytesThresholdHigh(), new ByteSizeValue(freeBytes));
         }
         if (freeDiskPercentage < diskThresholdSettings.getFreeDiskThresholdHigh()) {
             if (logger.isDebugEnabled()) {
@@ -270,16 +292,19 @@ public class DiskThresholdDecider extends AllocationDecider {
                         diskThresholdSettings.getFreeDiskThresholdHigh(), freeDiskPercentage, node.nodeId());
             }
             return allocation.decision(Decision.NO, NAME,
-                    "after allocating this shard this node would be above the high watermark " +
-                            "and there would be less than required [%s%%] free disk on node, free: [%s%%]",
-                    diskThresholdSettings.getFreeDiskThresholdHigh(), freeDiskPercentage);
+                "the shard cannot remain on this node because it is above the high watermark cluster setting [%s=%s] " +
+                    "and there is less than the required [%s%%] free disk on node, actual free: [%s%%]",
+                CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(),
+                diskThresholdSettings.getHighWatermarkRaw(),
+                diskThresholdSettings.getFreeDiskThresholdHigh(), freeDiskPercentage);
         }
 
         return allocation.decision(Decision.YES, NAME,
                 "there is enough disk on this node for the shard to remain, free: [%s]", new ByteSizeValue(freeBytes));
     }
 
-    private DiskUsage getDiskUsage(RoutingNode node, RoutingAllocation allocation, ImmutableOpenMap<String, DiskUsage> usages) {
+    private DiskUsage getDiskUsage(RoutingNode node, RoutingAllocation allocation,
+                                   ImmutableOpenMap<String, DiskUsage> usages, boolean subtractLeavingShards) {
         DiskUsage usage = usages.get(node.nodeId());
         if (usage == null) {
             // If there is no usage, and we have other nodes in the cluster,
@@ -292,7 +317,7 @@ public class DiskThresholdDecider extends AllocationDecider {
         }
 
         if (diskThresholdSettings.includeRelocations()) {
-            long relocatingShardsSize = sizeOfRelocatingShards(node, allocation, true, usage.getPath());
+            long relocatingShardsSize = sizeOfRelocatingShards(node, allocation, subtractLeavingShards, usage.getPath());
             DiskUsage usageIncludingRelocations = new DiskUsage(node.nodeId(), node.node().getName(), usage.getPath(),
                     usage.getTotalBytes(), usage.getFreeBytes() - relocatingShardsSize);
             if (logger.isTraceEnabled()) {
@@ -378,13 +403,14 @@ public class DiskThresholdDecider extends AllocationDecider {
     public static long getExpectedShardSize(ShardRouting shard, RoutingAllocation allocation, long defaultValue) {
         final IndexMetaData metaData = allocation.metaData().getIndexSafe(shard.index());
         final ClusterInfo info = allocation.clusterInfo();
-        if (metaData.getMergeSourceIndex() != null && shard.allocatedPostIndexCreate(metaData) == false) {
+        if (metaData.getResizeSourceIndex() != null && shard.active() == false &&
+            shard.recoverySource().getType() == RecoverySource.Type.LOCAL_SHARDS) {
             // in the shrink index case we sum up the source index shards since we basically make a copy of the shard in
             // the worst case
             long targetShardSize = 0;
-            final Index mergeSourceIndex = metaData.getMergeSourceIndex();
-            final IndexMetaData sourceIndexMeta = allocation.metaData().getIndexSafe(metaData.getMergeSourceIndex());
-            final Set<ShardId> shardIds = IndexMetaData.selectShrinkShards(shard.id(), sourceIndexMeta, metaData.getNumberOfShards());
+            final Index mergeSourceIndex = metaData.getResizeSourceIndex();
+            final IndexMetaData sourceIndexMeta = allocation.metaData().getIndexSafe(mergeSourceIndex);
+            final Set<ShardId> shardIds = IndexMetaData.selectRecoverFromShards(shard.id(), sourceIndexMeta, metaData.getNumberOfShards());
             for (IndexShardRoutingTable shardRoutingTable : allocation.routingTable().index(mergeSourceIndex.getName())) {
                 if (shardIds.contains(shardRoutingTable.shardId())) {
                     targetShardSize += info.getShardSize(shardRoutingTable.primaryShard(), 0);

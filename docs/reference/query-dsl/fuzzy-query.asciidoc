@@ -1,8 +1,6 @@
 [[query-dsl-fuzzy-query]]
 === Fuzzy Query
 
-deprecated[5.0.0, Will be removed in 6.0. Use match queries with fuzziness instead]
-
 The fuzzy query uses similarity based on Levenshtein edit distance.
 
 ==== String fields
@@ -38,7 +36,8 @@ GET /_search
                     "boost" :         1.0,
                     "fuzziness" :     2,
                     "prefix_length" : 0,
-                    "max_expansions": 100
+                    "max_expansions": 100,
+                    "transpositions": false
             }
         }
     }
@@ -65,6 +64,10 @@ GET /_search
     The maximum number of terms that the `fuzzy` query will expand to.
     Defaults to `50`.
 
+`transpositions`::
+
+    Whether fuzzy transpositions (`ab` -> `ba`) are supported.
+    Default is `true`.
 
 WARNING: This query can be very heavy if `prefix_length` is set to `0` and if
 `max_expansions` is set to a high number. It could result in every term in the

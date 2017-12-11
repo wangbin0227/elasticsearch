@@ -19,33 +19,29 @@
 
 package org.elasticsearch.index.query;
 
-import static java.util.Collections.unmodifiableMap;
-
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.queryparser.classic.MapperQueryParser;
-import org.apache.lucene.queryparser.classic.QueryParserSettings;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.similarities.Similarity;
+import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.common.CheckedFunction;
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexSettings;
-import org.elasticsearch.index.analysis.AnalysisService;
+import org.elasticsearch.index.analysis.IndexAnalyzers;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
 import org.elasticsearch.index.fielddata.IndexFieldData;
-import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.mapper.ContentPath;
+import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.Mapper;
 import org.elasticsearch.index.mapper.MapperService;
@@ -53,22 +49,40 @@ import org.elasticsearch.index.mapper.ObjectMapper;
 import org.elasticsearch.index.mapper.TextFieldMapper;
 import org.elasticsearch.index.query.support.NestedScope;
 import org.elasticsearch.index.similarity.SimilarityService;
-import org.elasticsearch.indices.query.IndicesQueriesRegistry;
 import org.elasticsearch.script.ScriptService;
-import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.lookup.SearchLookup;
+import org.elasticsearch.transport.RemoteClusterAware;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.LongSupplier;
+
+import static java.util.Collections.unmodifiableMap;
 
 /**
  * Context object used to create lucene queries on the shard level.
  */
 public class QueryShardContext extends QueryRewriteContext {
 
+    private final ScriptService scriptService;
+    private final IndexSettings indexSettings;
     private final MapperService mapperService;
     private final SimilarityService similarityService;
     private final BitsetFilterCache bitsetFilterCache;
-    private final IndexFieldDataService indexFieldDataService;
-    private final IndexSettings indexSettings;
+    private final BiFunction<MappedFieldType, String, IndexFieldData<?>> indexFieldDataService;
+    private final int shardId;
+    private final IndexReader reader;
+    private final String clusterAlias;
     private String[] types = Strings.EMPTY_ARRAY;
+    private boolean cachable = true;
+    private final SetOnce<Boolean> frozen = new SetOnce<>();
+    private final String fullyQualifiedIndexName;
 
     public void setTypes(String... types) {
         this.types = types;
@@ -79,32 +93,35 @@ public class QueryShardContext extends QueryRewriteContext {
     }
 
     private final Map<String, Query> namedQueries = new HashMap<>();
-    private final MapperQueryParser queryParser = new MapperQueryParser(this);
-    private final IndicesQueriesRegistry indicesQueriesRegistry;
     private boolean allowUnmappedFields;
     private boolean mapUnmappedFieldAsString;
     private NestedScope nestedScope;
     private boolean isFilter;
 
-    public QueryShardContext(IndexSettings indexSettings, BitsetFilterCache bitsetFilterCache, IndexFieldDataService indexFieldDataService,
-                             MapperService mapperService, SimilarityService similarityService, ScriptService scriptService,
-                             final IndicesQueriesRegistry indicesQueriesRegistry, Client client,
-                             IndexReader reader, ClusterState clusterState) {
-        super(indexSettings, mapperService, scriptService, indicesQueriesRegistry, client, reader, clusterState);
-        this.indexSettings = indexSettings;
+    public QueryShardContext(int shardId, IndexSettings indexSettings, BitsetFilterCache bitsetFilterCache,
+                             BiFunction<MappedFieldType, String, IndexFieldData<?>> indexFieldDataLookup, MapperService mapperService,
+                             SimilarityService similarityService, ScriptService scriptService, NamedXContentRegistry xContentRegistry,
+                             NamedWriteableRegistry namedWriteableRegistry, Client client, IndexReader reader, LongSupplier nowInMillis,
+                             String clusterAlias) {
+        super(xContentRegistry, namedWriteableRegistry,client, nowInMillis);
+        this.shardId = shardId;
         this.similarityService = similarityService;
         this.mapperService = mapperService;
         this.bitsetFilterCache = bitsetFilterCache;
-        this.indexFieldDataService = indexFieldDataService;
+        this.indexFieldDataService = indexFieldDataLookup;
         this.allowUnmappedFields = indexSettings.isDefaultAllowUnmappedFields();
-        this.indicesQueriesRegistry = indicesQueriesRegistry;
         this.nestedScope = new NestedScope();
+        this.scriptService = scriptService;
+        this.indexSettings = indexSettings;
+        this.reader = reader;
+        this.clusterAlias = clusterAlias;
+        this.fullyQualifiedIndexName = RemoteClusterAware.buildRemoteIndexName(clusterAlias, indexSettings.getIndex().getName());
     }
 
     public QueryShardContext(QueryShardContext source) {
-        this(source.indexSettings, source.bitsetFilterCache, source.indexFieldDataService, source.mapperService,
-                source.similarityService, source.scriptService, source.indicesQueriesRegistry, source.client,
-                source.reader, source.clusterState);
+        this(source.shardId, source.indexSettings, source.bitsetFilterCache, source.indexFieldDataService, source.mapperService,
+                source.similarityService, source.scriptService, source.getXContentRegistry(), source.getWriteableRegistry(),
+                source.client, source.reader, source.nowInMillis, source.clusterAlias);
         this.types = source.getTypes();
     }
 
@@ -116,16 +133,16 @@ public class QueryShardContext extends QueryRewriteContext {
         this.isFilter = false;
     }
 
-    public AnalysisService getAnalysisService() {
-        return mapperService.analysisService();
+    public IndexAnalyzers getIndexAnalyzers() {
+        return mapperService.getIndexAnalyzers();
     }
 
     public Similarity getSearchSimilarity() {
         return similarityService != null ? similarityService.similarity(mapperService) : null;
     }
 
-    public String defaultField() {
-        return indexSettings.getDefaultField();
+    public List<String> defaultFields() {
+        return indexSettings.getDefaultFields();
     }
 
     public boolean queryStringLenient() {
@@ -140,17 +157,12 @@ public class QueryShardContext extends QueryRewriteContext {
         return indexSettings.isQueryStringAllowLeadingWildcard();
     }
 
-    public MapperQueryParser queryParser(QueryParserSettings settings) {
-        queryParser.reset(settings);
-        return queryParser;
-    }
-
     public BitSetProducer bitsetFilter(Query filter) {
         return bitsetFilterCache.getBitSetProducer(filter);
     }
 
-    public <IFD extends IndexFieldData<?>> IFD getForField(MappedFieldType mapper) {
-        return indexFieldDataService.getForField(mapper);
+    public <IFD extends IndexFieldData<?>> IFD getForField(MappedFieldType fieldType) {
+        return (IFD) indexFieldDataService.apply(fieldType, fullyQualifiedIndexName);
     }
 
     public void addNamedQuery(String name, Query query) {
@@ -180,6 +192,10 @@ public class QueryShardContext extends QueryRewriteContext {
         this.isFilter = isFilter;
     }
 
+    /**
+     * Returns all the fields that match a given pattern. If prefixed with a
+     * type then the fields will be returned with a type prefix.
+     */
     public Collection<String> simpleMatchToIndexNames(String pattern) {
         return mapperService.simpleMatchToIndexNames(pattern);
     }
@@ -190,6 +206,14 @@ public class QueryShardContext extends QueryRewriteContext {
 
     public ObjectMapper getObjectMapper(String name) {
         return mapperService.getObjectMapper(name);
+    }
+
+    /**
+     * Returns s {@link DocumentMapper} instance for the given type.
+     * Delegates to {@link MapperService#documentMapper(String)}
+     */
+    public DocumentMapper documentMapper(String type) {
+        return mapperService.documentMapper(type);
     }
 
     /**
@@ -250,22 +274,11 @@ public class QueryShardContext extends QueryRewriteContext {
     private SearchLookup lookup = null;
 
     public SearchLookup lookup() {
-        SearchContext current = SearchContext.current();
-        if (current != null) {
-            return current.lookup();
-        }
         if (lookup == null) {
-            lookup = new SearchLookup(getMapperService(), indexFieldDataService, null);
+            lookup = new SearchLookup(getMapperService(),
+                mappedFieldType -> indexFieldDataService.apply(mappedFieldType, fullyQualifiedIndexName), types);
         }
         return lookup;
-    }
-
-    public long nowInMillis() {
-        SearchContext current = SearchContext.current();
-        if (current != null) {
-            return current.nowInMillis();
-        }
-        return System.currentTimeMillis();
     }
 
     public NestedScope nestedScope() {
@@ -274,15 +287,6 @@ public class QueryShardContext extends QueryRewriteContext {
 
     public Version indexVersionCreated() {
         return indexSettings.getIndexVersionCreated();
-    }
-
-    public boolean matchesIndices(String... indices) {
-        for (String index : indices) {
-            if (indexSettings.matchesIndexName(index)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     public ParsedQuery toFilter(QueryBuilder queryBuilder) {
@@ -305,15 +309,10 @@ public class QueryShardContext extends QueryRewriteContext {
         });
     }
 
-    @FunctionalInterface
-    private interface CheckedFunction<T, R> {
-       R apply(T t) throws IOException;
-    }
-
-    private ParsedQuery toQuery(QueryBuilder queryBuilder, CheckedFunction<QueryBuilder, Query> filterOrQuery) {
+    private ParsedQuery toQuery(QueryBuilder queryBuilder, CheckedFunction<QueryBuilder, Query, IOException> filterOrQuery) {
         reset();
         try {
-            QueryBuilder rewriteQuery = QueryBuilder.rewriteQuery(queryBuilder, this);
+            QueryBuilder rewriteQuery = Rewriteable.rewrite(queryBuilder, this, true);
             return new ParsedQuery(filterOrQuery.apply(rewriteQuery), copyNamedQueries());
         } catch(QueryShardException | ParsingException e ) {
             throw e;
@@ -324,7 +323,113 @@ public class QueryShardContext extends QueryRewriteContext {
         }
     }
 
-    public final Index index() {
+    public Index index() {
         return indexSettings.getIndex();
+    }
+
+    /** Return the script service to allow compiling scripts. */
+    public final ScriptService getScriptService() {
+        failIfFrozen();
+        return scriptService;
+    }
+
+    /**
+     * if this method is called the query context will throw exception if methods are accessed
+     * that could yield different results across executions like {@link #getClient()}
+     */
+    public final void freezeContext() {
+        this.frozen.set(Boolean.TRUE);
+    }
+
+    /**
+     * This method fails if {@link #freezeContext()} is called before on this
+     * context. This is used to <i>seal</i>.
+     *
+     * This methods and all methods that call it should be final to ensure that
+     * setting the request as not cacheable and the freezing behaviour of this
+     * class cannot be bypassed. This is important so we can trust when this
+     * class says a request can be cached.
+     */
+    protected final void failIfFrozen() {
+        this.cachable = false;
+        if (frozen.get() == Boolean.TRUE) {
+            throw new IllegalArgumentException("features that prevent cachability are disabled on this context");
+        } else {
+            assert frozen.get() == null : frozen.get();
+        }
+    }
+
+    @Override
+    public void registerAsyncAction(BiConsumer<Client, ActionListener<?>> asyncAction) {
+        failIfFrozen();
+        super.registerAsyncAction(asyncAction);
+    }
+
+    @Override
+    public void executeAsyncActions(ActionListener listener) {
+        failIfFrozen();
+        super.executeAsyncActions(listener);
+    }
+
+    /**
+     * Returns <code>true</code> iff the result of the processed search request is cachable. Otherwise <code>false</code>
+     */
+    public final boolean isCachable() {
+        return cachable;
+    }
+
+    /**
+     * Returns the shard ID this context was created for.
+     */
+    public int getShardId() {
+        return shardId;
+    }
+
+    @Override
+    public final long nowInMillis() {
+        failIfFrozen();
+        return super.nowInMillis();
+    }
+
+    public Client getClient() {
+        failIfFrozen(); // we somebody uses a terms filter with lookup for instance can't be cached...
+        return client;
+    }
+
+    public QueryBuilder parseInnerQueryBuilder(XContentParser parser) throws IOException {
+        return AbstractQueryBuilder.parseInnerQueryBuilder(parser);
+    }
+
+    @Override
+    public final QueryShardContext convertToShardContext() {
+        return this;
+    }
+
+    /**
+     * Returns the index settings for this context. This might return null if the
+     * context has not index scope.
+     */
+    public IndexSettings getIndexSettings() {
+        return indexSettings;
+    }
+
+    /**
+     * Return the MapperService.
+     */
+    public MapperService getMapperService() {
+        return mapperService;
+    }
+
+    /** Return the current {@link IndexReader}, or {@code null} if no index reader is available,
+     *  for instance if this rewrite context is used to index queries (percolation). */
+    public IndexReader getIndexReader() {
+        return reader;
+    }
+
+    /**
+     * Returns the fully qualified index name including a remote cluster alias if applicable
+     */
+    public String getFullyQualifiedIndexName() {
+        return fullyQualifiedIndexName;
     }
 }

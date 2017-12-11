@@ -19,71 +19,51 @@
 
 package org.elasticsearch.search.internal;
 
+import org.elasticsearch.Version;
+import org.elasticsearch.action.OriginalIndices;
 import org.elasticsearch.action.search.SearchRequest;
-import org.elasticsearch.cluster.routing.RestoreSource;
-import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.cluster.routing.UnassignedInfo;
+import org.elasticsearch.cluster.metadata.AliasMetaData;
+import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.common.CheckedFunction;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
-import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.index.query.RandomQueryBuilder;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.indices.IndicesModule;
-import org.elasticsearch.search.SearchModule;
-import org.elasticsearch.search.SearchRequestTests;
-import org.elasticsearch.snapshots.Snapshot;
-import org.elasticsearch.snapshots.SnapshotId;
-import org.elasticsearch.test.ESTestCase;
-import org.elasticsearch.test.VersionUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.elasticsearch.indices.InvalidAliasNameException;
+import org.elasticsearch.search.AbstractSearchTestCase;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
-import static java.util.Collections.emptyList;
+import static org.elasticsearch.index.query.AbstractQueryBuilder.parseInnerQueryBuilder;
+import static org.elasticsearch.index.query.QueryBuilders.termQuery;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.nullValue;
 
-public class ShardSearchTransportRequestTests extends ESTestCase {
-
-    private static NamedWriteableRegistry namedWriteableRegistry;
-
-    @BeforeClass
-    public static void beforeClass() {
-        IndicesModule indicesModule = new IndicesModule(emptyList()) {
-            @Override
-            protected void configure() {
-                bindMapperExtension();
-            }
-        };
-        SearchModule searchModule = new SearchModule(Settings.EMPTY, false, emptyList()) {
-            @Override
-            protected void configureSearch() {
-                // Skip me
-            }
-        };
-        List<NamedWriteableRegistry.Entry> entries = new ArrayList<>();
-        entries.addAll(indicesModule.getNamedWriteables());
-        entries.addAll(searchModule.getNamedWriteables());
-        namedWriteableRegistry = new NamedWriteableRegistry(entries);
-    }
-
-    @AfterClass
-    public static void afterClass() {
-        namedWriteableRegistry = null;
-    }
+public class ShardSearchTransportRequestTests extends AbstractSearchTestCase {
+    private IndexMetaData baseMetaData = IndexMetaData.builder("test").settings(Settings.builder()
+        .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT).build())
+        .numberOfShards(1).numberOfReplicas(1).build();
 
     public void testSerialization() throws Exception {
         ShardSearchTransportRequest shardSearchTransportRequest = createShardSearchTransportRequest();
         try (BytesStreamOutput output = new BytesStreamOutput()) {
             shardSearchTransportRequest.writeTo(output);
             try (StreamInput in = new NamedWriteableAwareStreamInput(output.bytes().streamInput(), namedWriteableRegistry)) {
-                ShardSearchTransportRequest deserializedRequest = new ShardSearchTransportRequest();
-                deserializedRequest.readFrom(in);
+                ShardSearchTransportRequest deserializedRequest = new ShardSearchTransportRequest(in);
                 assertEquals(deserializedRequest.scroll(), shardSearchTransportRequest.scroll());
-                assertArrayEquals(deserializedRequest.filteringAliases(), shardSearchTransportRequest.filteringAliases());
+                assertEquals(deserializedRequest.getAliasFilter(), shardSearchTransportRequest.getAliasFilter());
                 assertArrayEquals(deserializedRequest.indices(), shardSearchTransportRequest.indices());
                 assertArrayEquals(deserializedRequest.types(), shardSearchTransportRequest.types());
                 assertEquals(deserializedRequest.indicesOptions(), shardSearchTransportRequest.indicesOptions());
@@ -93,26 +73,96 @@ public class ShardSearchTransportRequestTests extends ESTestCase {
                 assertEquals(deserializedRequest.searchType(), shardSearchTransportRequest.searchType());
                 assertEquals(deserializedRequest.shardId(), shardSearchTransportRequest.shardId());
                 assertEquals(deserializedRequest.numberOfShards(), shardSearchTransportRequest.numberOfShards());
+                assertEquals(deserializedRequest.cacheKey(), shardSearchTransportRequest.cacheKey());
                 assertNotSame(deserializedRequest, shardSearchTransportRequest);
+                assertEquals(deserializedRequest.getAliasFilter(), shardSearchTransportRequest.getAliasFilter());
+                assertEquals(deserializedRequest.indexBoost(), shardSearchTransportRequest.indexBoost(), 0.0f);
             }
         }
     }
 
-    private static ShardSearchTransportRequest createShardSearchTransportRequest() throws IOException {
-        SearchRequest searchRequest = SearchRequestTests.createSearchRequest();
-        ShardId shardId = new ShardId(randomAsciiOfLengthBetween(2, 10), randomAsciiOfLengthBetween(2, 10), randomInt());
-        Snapshot snapshot = new Snapshot(randomAsciiOfLengthBetween(3, 10),
-                new SnapshotId(randomAsciiOfLengthBetween(3, 10), randomAsciiOfLengthBetween(3, 10)));
-        RestoreSource restoreSource = new RestoreSource(snapshot, VersionUtils.randomVersion(random()), randomAsciiOfLengthBetween(3, 10));
-        ShardRouting shardRouting = ShardRouting.newUnassigned(shardId, restoreSource, randomBoolean(),
-                new UnassignedInfo(randomFrom(UnassignedInfo.Reason.values()), "reason"));
-        String[] filteringAliases;
+    private ShardSearchTransportRequest createShardSearchTransportRequest() throws IOException {
+        SearchRequest searchRequest = createSearchRequest();
+        ShardId shardId = new ShardId(randomAlphaOfLengthBetween(2, 10), randomAlphaOfLengthBetween(2, 10), randomInt());
+        final AliasFilter filteringAliases;
         if (randomBoolean()) {
-            filteringAliases = generateRandomStringArray(10, 10, false, false);
+            String[] strings = generateRandomStringArray(10, 10, false, false);
+            filteringAliases = new AliasFilter(RandomQueryBuilder.createQuery(random()), strings);
         } else {
-            filteringAliases = Strings.EMPTY_ARRAY;
+            filteringAliases = new AliasFilter(null, Strings.EMPTY_ARRAY);
         }
-        return new ShardSearchTransportRequest(searchRequest, shardRouting,
-                randomIntBetween(1, 100), filteringAliases, Math.abs(randomLong()));
+        return new ShardSearchTransportRequest(new OriginalIndices(searchRequest), searchRequest, shardId,
+                randomIntBetween(1, 100), filteringAliases, randomBoolean() ? 1.0f : randomFloat(), Math.abs(randomLong()), null);
+    }
+
+    public void testFilteringAliases() throws Exception {
+        IndexMetaData indexMetaData = baseMetaData;
+        indexMetaData = add(indexMetaData, "cats", filter(termQuery("animal", "cat")));
+        indexMetaData = add(indexMetaData, "dogs", filter(termQuery("animal", "dog")));
+        indexMetaData = add(indexMetaData, "all", null);
+
+        assertThat(indexMetaData.getAliases().containsKey("cats"), equalTo(true));
+        assertThat(indexMetaData.getAliases().containsKey("dogs"), equalTo(true));
+        assertThat(indexMetaData.getAliases().containsKey("turtles"), equalTo(false));
+
+        assertEquals(aliasFilter(indexMetaData, "cats"), QueryBuilders.termQuery("animal", "cat"));
+        assertEquals(aliasFilter(indexMetaData, "cats", "dogs"), QueryBuilders.boolQuery().should(QueryBuilders.termQuery("animal", "cat"))
+            .should(QueryBuilders.termQuery("animal", "dog")));
+
+        // Non-filtering alias should turn off all filters because filters are ORed
+        assertThat(aliasFilter(indexMetaData,"all"), nullValue());
+        assertThat(aliasFilter(indexMetaData, "cats", "all"), nullValue());
+        assertThat(aliasFilter(indexMetaData, "all", "cats"), nullValue());
+
+        indexMetaData = add(indexMetaData, "cats", filter(termQuery("animal", "feline")));
+        indexMetaData = add(indexMetaData, "dogs", filter(termQuery("animal", "canine")));
+        assertEquals(aliasFilter(indexMetaData, "dogs", "cats"),QueryBuilders.boolQuery()
+            .should(QueryBuilders.termQuery("animal", "canine"))
+            .should(QueryBuilders.termQuery("animal", "feline")));
+    }
+
+    public void testRemovedAliasFilter() throws Exception {
+        IndexMetaData indexMetaData = baseMetaData;
+        indexMetaData = add(indexMetaData, "cats", filter(termQuery("animal", "cat")));
+        indexMetaData = remove(indexMetaData, "cats");
+        try {
+            aliasFilter(indexMetaData, "cats");
+            fail("Expected InvalidAliasNameException");
+        } catch (InvalidAliasNameException e) {
+            assertThat(e.getMessage(), containsString("Invalid alias name [cats]"));
+        }
+    }
+
+    public void testUnknownAliasFilter() throws Exception {
+        IndexMetaData indexMetaData = baseMetaData;
+        indexMetaData = add(indexMetaData, "cats", filter(termQuery("animal", "cat")));
+        indexMetaData = add(indexMetaData, "dogs", filter(termQuery("animal", "dog")));
+        IndexMetaData finalIndexMetadata = indexMetaData;
+        expectThrows(InvalidAliasNameException.class, () -> aliasFilter(finalIndexMetadata, "unknown"));
+    }
+
+    public static CompressedXContent filter(QueryBuilder filterBuilder) throws IOException {
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        filterBuilder.toXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.close();
+        return new CompressedXContent(builder.string());
+    }
+
+    private IndexMetaData remove(IndexMetaData indexMetaData, String alias) {
+        IndexMetaData build = IndexMetaData.builder(indexMetaData).removeAlias(alias).build();
+        return build;
+    }
+
+    private IndexMetaData add(IndexMetaData indexMetaData, String alias, @Nullable CompressedXContent filter) {
+        return IndexMetaData.builder(indexMetaData).putAlias(AliasMetaData.builder(alias).filter(filter).build()).build();
+    }
+
+    public QueryBuilder aliasFilter(IndexMetaData indexMetaData, String... aliasNames) {
+        CheckedFunction<byte[], QueryBuilder, IOException> filterParser = bytes -> {
+            try (XContentParser parser = XContentFactory.xContent(bytes).createParser(xContentRegistry(), bytes)) {
+                return parseInnerQueryBuilder(parser);
+            }
+        };
+        return ShardSearchRequest.parseAliasFilter(filterParser, indexMetaData, aliasNames);
     }
 }

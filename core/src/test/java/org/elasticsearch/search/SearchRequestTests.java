@@ -19,64 +19,31 @@
 
 package org.elasticsearch.search;
 
+import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
-import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.indices.IndicesModule;
-import org.elasticsearch.test.ESTestCase;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.elasticsearch.common.util.ArrayUtils;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
-import static java.util.Collections.emptyList;
-import static org.elasticsearch.search.builder.SearchSourceBuilderTests.createSearchSourceBuilder;
+import static org.elasticsearch.test.EqualsHashCodeTestUtils.checkEqualsAndHashCode;
 
-public class SearchRequestTests extends ESTestCase {
-
-    private static NamedWriteableRegistry namedWriteableRegistry;
-
-    @BeforeClass
-    public static void beforeClass() {
-        IndicesModule indicesModule = new IndicesModule(emptyList()) {
-            @Override
-            protected void configure() {
-                bindMapperExtension();
-            }
-        };
-        SearchModule searchModule = new SearchModule(Settings.EMPTY, false, emptyList()) {
-            @Override
-            protected void configureSearch() {
-                // Skip me
-            }
-        };
-        List<NamedWriteableRegistry.Entry> entries = new ArrayList<>();
-        entries.addAll(indicesModule.getNamedWriteables());
-        entries.addAll(searchModule.getNamedWriteables());
-        namedWriteableRegistry = new NamedWriteableRegistry(entries);
-    }
-
-    @AfterClass
-    public static void afterClass() {
-        namedWriteableRegistry = null;
-    }
+public class SearchRequestTests extends AbstractSearchTestCase {
 
     public void testSerialization() throws Exception {
         SearchRequest searchRequest = createSearchRequest();
         try (BytesStreamOutput output = new BytesStreamOutput()) {
             searchRequest.writeTo(output);
             try (StreamInput in = new NamedWriteableAwareStreamInput(output.bytes().streamInput(), namedWriteableRegistry)) {
-                SearchRequest deserializedRequest = new SearchRequest();
-                deserializedRequest.readFrom(in);
+                SearchRequest deserializedRequest = new SearchRequest(in);
                 assertEquals(deserializedRequest, searchRequest);
                 assertEquals(deserializedRequest.hashCode(), searchRequest.hashCode());
                 assertNotSame(deserializedRequest, searchRequest);
@@ -114,128 +81,62 @@ public class SearchRequestTests extends ESTestCase {
         assertEquals("keepAlive must not be null", e.getMessage());
     }
 
-    public void testEqualsAndHashcode() throws IOException {
-        SearchRequest firstSearchRequest = createSearchRequest();
-        assertNotNull("search request is equal to null", firstSearchRequest);
-        assertNotEquals("search request  is equal to incompatible type", firstSearchRequest, "");
-        assertEquals("search request is not equal to self", firstSearchRequest, firstSearchRequest);
-        assertEquals("same source builder's hashcode returns different values if called multiple times",
-                firstSearchRequest.hashCode(), firstSearchRequest.hashCode());
+    public void testValidate() throws IOException {
 
-        SearchRequest secondSearchRequest = copyRequest(firstSearchRequest);
-        assertEquals("search request  is not equal to self", secondSearchRequest, secondSearchRequest);
-        assertEquals("search request is not equal to its copy", firstSearchRequest, secondSearchRequest);
-        assertEquals("search request is not symmetric", secondSearchRequest, firstSearchRequest);
-        assertEquals("search request copy's hashcode is different from original hashcode",
-                firstSearchRequest.hashCode(), secondSearchRequest.hashCode());
-
-        SearchRequest thirdSearchRequest = copyRequest(secondSearchRequest);
-        assertEquals("search request is not equal to self", thirdSearchRequest, thirdSearchRequest);
-        assertEquals("search request is not equal to its copy", secondSearchRequest, thirdSearchRequest);
-        assertEquals("search request copy's hashcode is different from original hashcode",
-                secondSearchRequest.hashCode(), thirdSearchRequest.hashCode());
-        assertEquals("equals is not transitive", firstSearchRequest, thirdSearchRequest);
-        assertEquals("search request copy's hashcode is different from original hashcode",
-                firstSearchRequest.hashCode(), thirdSearchRequest.hashCode());
-        assertEquals("equals is not symmetric", thirdSearchRequest, secondSearchRequest);
-        assertEquals("equals is not symmetric", thirdSearchRequest, firstSearchRequest);
-
-        boolean changed = false;
-        if (randomBoolean()) {
-            secondSearchRequest.indices(generateRandomStringArray(10, 10, false, false));
-            if (Arrays.equals(secondSearchRequest.indices(), firstSearchRequest.indices()) == false) {
-                changed = true;
-            }
+        {
+            // if scroll isn't set, validate should never add errors
+            SearchRequest searchRequest = createSearchRequest().source(new SearchSourceBuilder());
+            searchRequest.scroll((Scroll) null);
+            ActionRequestValidationException validationErrors = searchRequest.validate();
+            assertNull(validationErrors);
         }
-        if (randomBoolean()) {
-            secondSearchRequest.indicesOptions(
-                    IndicesOptions.fromOptions(randomBoolean(), randomBoolean(), randomBoolean(), randomBoolean()));
-            if (secondSearchRequest.indicesOptions().equals(firstSearchRequest.indicesOptions()) == false) {
-                changed = true;
-            }
+        {
+            // disabling `track_total_hits` isn't valid in scroll context
+            SearchRequest searchRequest = createSearchRequest().source(new SearchSourceBuilder());
+            // make sure we don't set the request cache for a scroll query
+            searchRequest.requestCache(false);
+            searchRequest.scroll(new TimeValue(1000));
+            searchRequest.source().trackTotalHits(false);
+            ActionRequestValidationException validationErrors = searchRequest.validate();
+            assertNotNull(validationErrors);
+            assertEquals(1, validationErrors.validationErrors().size());
+            assertEquals("disabling [track_total_hits] is not allowed in a scroll context", validationErrors.validationErrors().get(0));
         }
-        if (randomBoolean()) {
-            secondSearchRequest.types(generateRandomStringArray(10, 10, false, false));
-            if (Arrays.equals(secondSearchRequest.types(), firstSearchRequest.types()) == false) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.preference(randomAsciiOfLengthBetween(3, 10));
-            if (secondSearchRequest.preference().equals(firstSearchRequest.preference()) == false) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.routing(randomAsciiOfLengthBetween(3, 10));
-            if (secondSearchRequest.routing().equals(firstSearchRequest.routing()) == false) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.requestCache(randomBoolean());
-            if (secondSearchRequest.requestCache().equals(firstSearchRequest.requestCache()) == false) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.scroll(randomPositiveTimeValue());
-            if (secondSearchRequest.scroll().equals(firstSearchRequest.scroll()) == false) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.searchType(randomFrom(SearchType.values()));
-            if (secondSearchRequest.searchType() != firstSearchRequest.searchType()) {
-                changed = true;
-            }
-        }
-        if (randomBoolean()) {
-            secondSearchRequest.source(createSearchSourceBuilder());
-            if (secondSearchRequest.source().equals(firstSearchRequest.source()) == false) {
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            assertNotEquals(firstSearchRequest, secondSearchRequest);
-            assertNotEquals(firstSearchRequest.hashCode(), secondSearchRequest.hashCode());
-        } else {
-            assertEquals(firstSearchRequest, secondSearchRequest);
-            assertEquals(firstSearchRequest.hashCode(), secondSearchRequest.hashCode());
+        {
+            // scroll and `from` isn't valid
+            SearchRequest searchRequest = createSearchRequest().source(new SearchSourceBuilder());
+            // make sure we don't set the request cache for a scroll query
+            searchRequest.requestCache(false);
+            searchRequest.scroll(new TimeValue(1000));
+            searchRequest.source().from(10);
+            ActionRequestValidationException validationErrors = searchRequest.validate();
+            assertNotNull(validationErrors);
+            assertEquals(1, validationErrors.validationErrors().size());
+            assertEquals("using [from] is not allowed in a scroll context", validationErrors.validationErrors().get(0));
         }
     }
 
-    public static SearchRequest createSearchRequest() throws IOException {
-        SearchRequest searchRequest = new SearchRequest();
-        if (randomBoolean()) {
-            searchRequest.indices(generateRandomStringArray(10, 10, false, false));
-        }
-        if (randomBoolean()) {
-            searchRequest.indicesOptions(IndicesOptions.fromOptions(randomBoolean(), randomBoolean(), randomBoolean(), randomBoolean()));
-        }
-        if (randomBoolean()) {
-            searchRequest.types(generateRandomStringArray(10, 10, false, false));
-        }
-        if (randomBoolean()) {
-            searchRequest.preference(randomAsciiOfLengthBetween(3, 10));
-        }
-        if (randomBoolean()) {
-            searchRequest.requestCache(randomBoolean());
-        }
-        if (randomBoolean()) {
-            searchRequest.routing(randomAsciiOfLengthBetween(3, 10));
-        }
-        if (randomBoolean()) {
-            searchRequest.scroll(randomPositiveTimeValue());
-        }
-        if (randomBoolean()) {
-            searchRequest.searchType(randomFrom(SearchType.values()));
-        }
-        if (randomBoolean()) {
-            searchRequest.source(createSearchSourceBuilder());
-        }
-        return searchRequest;
+    public void testEqualsAndHashcode() throws IOException {
+        checkEqualsAndHashCode(createSearchRequest(), SearchRequestTests::copyRequest, this::mutate);
+    }
+
+    private SearchRequest mutate(SearchRequest searchRequest) throws IOException {
+        SearchRequest mutation = copyRequest(searchRequest);
+        List<Runnable> mutators = new ArrayList<>();
+        mutators.add(() -> mutation.indices(ArrayUtils.concat(searchRequest.indices(), new String[] { randomAlphaOfLength(10) })));
+        mutators.add(() -> mutation.indicesOptions(randomValueOtherThan(searchRequest.indicesOptions(),
+                () -> IndicesOptions.fromOptions(randomBoolean(), randomBoolean(), randomBoolean(), randomBoolean()))));
+        mutators.add(() -> mutation.types(ArrayUtils.concat(searchRequest.types(), new String[] { randomAlphaOfLength(10) })));
+        mutators.add(() -> mutation.preference(randomValueOtherThan(searchRequest.preference(), () -> randomAlphaOfLengthBetween(3, 10))));
+        mutators.add(() -> mutation.routing(randomValueOtherThan(searchRequest.routing(), () -> randomAlphaOfLengthBetween(3, 10))));
+        mutators.add(() -> mutation.requestCache((randomValueOtherThan(searchRequest.requestCache(), () -> randomBoolean()))));
+        mutators.add(() -> mutation
+                .scroll(randomValueOtherThan(searchRequest.scroll(), () -> new Scroll(new TimeValue(randomNonNegativeLong() % 100000)))));
+        mutators.add(() -> mutation.searchType(randomValueOtherThan(searchRequest.searchType(),
+            () -> randomFrom(SearchType.DFS_QUERY_THEN_FETCH, SearchType.QUERY_THEN_FETCH))));
+        mutators.add(() -> mutation.source(randomValueOtherThan(searchRequest.source(), this::createSearchSourceBuilder)));
+        randomFrom(mutators).run();
+        return mutation;
     }
 
     private static SearchRequest copyRequest(SearchRequest searchRequest) throws IOException {

@@ -33,7 +33,6 @@ import org.elasticsearch.index.mapper.FieldMapper;
 import org.elasticsearch.index.mapper.GeoPointFieldMapper;
 import org.elasticsearch.index.mapper.ParseContext;
 import org.elasticsearch.index.mapper.ParseContext.Document;
-import org.elasticsearch.index.query.QueryParseContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -207,7 +206,8 @@ public class GeoContextMapping extends ContextMapping<GeoQueryContext> {
                     if (field instanceof StringField) {
                         spare.resetFromString(field.stringValue());
                     } else {
-                        spare.resetFromIndexHash(Long.parseLong(field.stringValue()));
+                        // todo return this to .stringValue() once LatLonPoint implements it
+                        spare.resetFromIndexableField(field);
                     }
                     geohashes.add(spare.geohash());
                 }
@@ -224,8 +224,8 @@ public class GeoContextMapping extends ContextMapping<GeoQueryContext> {
     }
 
     @Override
-    protected GeoQueryContext fromXContent(QueryParseContext context) throws IOException {
-        return GeoQueryContext.fromXContent(context);
+    protected GeoQueryContext fromXContent(XContentParser parser) throws IOException {
+        return GeoQueryContext.fromXContent(parser);
     }
 
     /**

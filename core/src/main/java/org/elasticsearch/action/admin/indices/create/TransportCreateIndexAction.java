@@ -72,14 +72,14 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
         }
 
         final String indexName = indexNameExpressionResolver.resolveDateMathExpression(request.index());
-        final CreateIndexClusterStateUpdateRequest updateRequest = new CreateIndexClusterStateUpdateRequest(request, cause, indexName, request.updateAllTypes())
+        final CreateIndexClusterStateUpdateRequest updateRequest = new CreateIndexClusterStateUpdateRequest(request, cause, indexName, request.index(), request.updateAllTypes())
                 .ackTimeout(request.timeout()).masterNodeTimeout(request.masterNodeTimeout())
                 .settings(request.settings()).mappings(request.mappings())
                 .aliases(request.aliases()).customs(request.customs())
                 .waitForActiveShards(request.waitForActiveShards());
 
         createIndexService.createIndex(updateRequest, ActionListener.wrap(response ->
-            listener.onResponse(new CreateIndexResponse(response.isAcknowledged(), response.isShardsAcked())),
+            listener.onResponse(new CreateIndexResponse(response.isAcknowledged(), response.isShardsAcked(), indexName)),
             listener::onFailure));
     }
 

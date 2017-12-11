@@ -22,6 +22,7 @@ package org.elasticsearch.index.query;
 import org.apache.lucene.queries.ExtendedCommonTermsQuery;
 import org.apache.lucene.search.Query;
 import org.elasticsearch.common.ParsingException;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.AbstractQueryTestCase;
 
 import java.io.IOException;
@@ -43,13 +44,13 @@ public class CommonTermsQueryBuilderTests extends AbstractQueryTestCase<CommonTe
         int numberOfTerms = randomIntBetween(0, 10);
         StringBuilder text = new StringBuilder("");
         for (int i = 0; i < numberOfTerms; i++) {
-            text.append(randomAsciiOfLengthBetween(1, 10)).append(" ");
+            text.append(randomAlphaOfLengthBetween(1, 10)).append(" ");
         }
         // mapped or unmapped field
         if (randomBoolean()) {
             query = new CommonTermsQueryBuilder(STRING_FIELD_NAME, text.toString());
         } else {
-            query = new CommonTermsQueryBuilder(randomAsciiOfLengthBetween(1, 10), text.toString());
+            query = new CommonTermsQueryBuilder(randomAlphaOfLengthBetween(1, 10), text.toString());
         }
 
         if (randomBoolean()) {
@@ -78,17 +79,14 @@ public class CommonTermsQueryBuilderTests extends AbstractQueryTestCase<CommonTe
             query.analyzer(randomAnalyzer());
         }
 
-        if (randomBoolean()) {
-            query.disableCoord(randomBoolean());
-        }
         return query;
     }
 
     @Override
     protected Map<String, CommonTermsQueryBuilder> getAlternateVersions() {
         Map<String, CommonTermsQueryBuilder> alternateVersions = new HashMap<>();
-        CommonTermsQueryBuilder commonTermsQuery = new CommonTermsQueryBuilder(randomAsciiOfLengthBetween(1, 10),
-                randomAsciiOfLengthBetween(1, 10));
+        CommonTermsQueryBuilder commonTermsQuery = new CommonTermsQueryBuilder(randomAlphaOfLengthBetween(1, 10),
+                randomAlphaOfLengthBetween(1, 10));
         String contentString = "{\n" +
                 "    \"common\" : {\n" +
                 "        \"" + commonTermsQuery.fieldName() + "\" : \"" + commonTermsQuery.value() + "\"\n" +
@@ -99,7 +97,7 @@ public class CommonTermsQueryBuilderTests extends AbstractQueryTestCase<CommonTe
     }
 
     @Override
-    protected void doAssertLuceneQuery(CommonTermsQueryBuilder queryBuilder, Query query, QueryShardContext context) throws IOException {
+    protected void doAssertLuceneQuery(CommonTermsQueryBuilder queryBuilder, Query query, SearchContext context) throws IOException {
         assertThat(query, instanceOf(ExtendedCommonTermsQuery.class));
         ExtendedCommonTermsQuery extendedCommonTermsQuery = (ExtendedCommonTermsQuery) query;
         assertThat(extendedCommonTermsQuery.getHighFreqMinimumNumberShouldMatchSpec(), equalTo(queryBuilder.highFreqMinimumShouldMatch()));
@@ -121,7 +119,6 @@ public class CommonTermsQueryBuilderTests extends AbstractQueryTestCase<CommonTe
                 "  \"common\" : {\n" +
                 "    \"body\" : {\n" +
                 "      \"query\" : \"nelly the elephant not as a cartoon\",\n" +
-                "      \"disable_coord\" : true,\n" +
                 "      \"high_freq_operator\" : \"AND\",\n" +
                 "      \"low_freq_operator\" : \"OR\",\n" +
                 "      \"cutoff_frequency\" : 0.001,\n" +
@@ -173,11 +170,9 @@ public class CommonTermsQueryBuilderTests extends AbstractQueryTestCase<CommonTe
 
     // see #11730
     public void testCommonTermsQuery4() throws IOException {
-        boolean disableCoord = randomBoolean();
-        Query parsedQuery = parseQuery(commonTermsQuery("field", "text").disableCoord(disableCoord).buildAsBytes()).toQuery(createShardContext());
+        Query parsedQuery = parseQuery(commonTermsQuery("field", "text")).toQuery(createShardContext());
         assertThat(parsedQuery, instanceOf(ExtendedCommonTermsQuery.class));
         ExtendedCommonTermsQuery ectQuery = (ExtendedCommonTermsQuery) parsedQuery;
-        assertThat(ectQuery.isCoordDisabled(), equalTo(disableCoord));
     }
 
     public void testParseFailsWithMultipleFields() throws IOException {

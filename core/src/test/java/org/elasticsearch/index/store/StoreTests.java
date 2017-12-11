@@ -46,7 +46,6 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.store.MockDirectoryWrapper;
 import org.apache.lucene.store.RAMDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
@@ -99,7 +98,10 @@ import static org.hamcrest.Matchers.notNullValue;
 
 public class StoreTests extends ESTestCase {
 
-    private static final IndexSettings INDEX_SETTINGS = IndexSettingsModule.newIndexSettings("index", Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, org.elasticsearch.Version.CURRENT).build());
+    private static final IndexSettings INDEX_SETTINGS = IndexSettingsModule.newIndexSettings("index",
+        Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, org.elasticsearch.Version.CURRENT).build());
+    private static final Version MIN_SUPPORTED_LUCENE_VERSION = org.elasticsearch.Version.CURRENT
+        .minimumIndexCompatibilityVersion().luceneVersion;
 
     public void testRefCount() throws IOException {
         final ShardId shardId = new ShardId("index", "_na_", 1);
@@ -170,7 +172,8 @@ public class StoreTests extends ESTestCase {
         indexInput.seek(0);
         BytesRef ref = new BytesRef(scaledRandomIntBetween(1, 1024));
         long length = indexInput.length();
-        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, checksum), dir.createOutput("foo1.bar", IOContext.DEFAULT));
+        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, checksum,
+            MIN_SUPPORTED_LUCENE_VERSION), dir.createOutput("foo1.bar", IOContext.DEFAULT));
         while (length > 0) {
             if (random().nextInt(10) == 0) {
                 verifyingOutput.writeByte(indexInput.readByte());
@@ -201,7 +204,8 @@ public class StoreTests extends ESTestCase {
 
     public void testVerifyingIndexOutputOnEmptyFile() throws IOException {
         Directory dir = newDirectory();
-        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo.bar", 0, Store.digestToString(0)),
+        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo.bar", 0, Store.digestToString(0),
+            MIN_SUPPORTED_LUCENE_VERSION),
             dir.createOutput("foo1.bar", IOContext.DEFAULT));
         try {
             Store.verify(verifyingOutput);
@@ -230,7 +234,8 @@ public class StoreTests extends ESTestCase {
         indexInput.seek(0);
         BytesRef ref = new BytesRef(scaledRandomIntBetween(1, 1024));
         long length = indexInput.length();
-        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, checksum), dir.createOutput("foo1.bar", IOContext.DEFAULT));
+        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, checksum,
+            MIN_SUPPORTED_LUCENE_VERSION), dir.createOutput("foo1.bar", IOContext.DEFAULT));
         length -= 8; // we write the checksum in the try / catch block below
         while (length > 0) {
             if (random().nextInt(10) == 0) {
@@ -284,7 +289,8 @@ public class StoreTests extends ESTestCase {
     public void testVerifyingIndexOutputWithBogusInput() throws IOException {
         Directory dir = newDirectory();
         int length = scaledRandomIntBetween(10, 1024);
-        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, ""), dir.createOutput("foo1.bar", IOContext.DEFAULT));
+        IndexOutput verifyingOutput = new Store.LuceneVerifyingIndexOutput(new StoreFileMetaData("foo1.bar", length, "",
+            MIN_SUPPORTED_LUCENE_VERSION), dir.createOutput("foo1.bar", IOContext.DEFAULT));
         try {
             while (length > 0) {
                 verifyingOutput.writeByte((byte) random().nextInt());
@@ -350,49 +356,6 @@ public class StoreTests extends ESTestCase {
         assertConsistent(store, metadata);
 
         TestUtil.checkIndex(store.directory());
-        assertDeleteContent(store, directoryService);
-        IOUtils.close(store);
-    }
-
-    public void testRenameFile() throws IOException {
-        final ShardId shardId = new ShardId("index", "_na_", 1);
-        DirectoryService directoryService = new LuceneManagedDirectoryService(random(), false);
-        Store store = new Store(shardId, INDEX_SETTINGS, directoryService, new DummyShardLock(shardId));
-        {
-            IndexOutput output = store.directory().createOutput("foo.bar", IOContext.DEFAULT);
-            int iters = scaledRandomIntBetween(10, 100);
-            for (int i = 0; i < iters; i++) {
-                BytesRef bytesRef = new BytesRef(TestUtil.randomRealisticUnicodeString(random(), 10, 1024));
-                output.writeBytes(bytesRef.bytes, bytesRef.offset, bytesRef.length);
-            }
-            CodecUtil.writeFooter(output);
-            output.close();
-        }
-        store.renameFile("foo.bar", "bar.foo");
-        assertThat(numNonExtraFiles(store), is(1));
-        final long lastChecksum;
-        try (IndexInput input = store.directory().openInput("bar.foo", IOContext.DEFAULT)) {
-            lastChecksum = CodecUtil.checksumEntireFile(input);
-        }
-
-        try {
-            store.directory().openInput("foo.bar", IOContext.DEFAULT);
-            fail("file was renamed");
-        } catch (FileNotFoundException | NoSuchFileException ex) {
-            // expected
-        }
-        {
-            IndexOutput output = store.directory().createOutput("foo.bar", IOContext.DEFAULT);
-            int iters = scaledRandomIntBetween(10, 100);
-            for (int i = 0; i < iters; i++) {
-                BytesRef bytesRef = new BytesRef(TestUtil.randomRealisticUnicodeString(random(), 10, 1024));
-                output.writeBytes(bytesRef.bytes, bytesRef.offset, bytesRef.length);
-            }
-            CodecUtil.writeFooter(output);
-            output.close();
-        }
-        store.renameFile("foo.bar", "bar.foo");
-        assertThat(numNonExtraFiles(store), is(1));
         assertDeleteContent(store, directoryService);
         IOUtils.close(store);
     }
@@ -512,16 +475,13 @@ public class StoreTests extends ESTestCase {
         private final Directory dir;
         private final Random random;
 
-        public LuceneManagedDirectoryService(Random random) {
+        LuceneManagedDirectoryService(Random random) {
             this(random, true);
         }
 
-        public LuceneManagedDirectoryService(Random random, boolean preventDoubleWrite) {
+        LuceneManagedDirectoryService(Random random, boolean preventDoubleWrite) {
             super(new ShardId(INDEX_SETTINGS.getIndex(), 1), INDEX_SETTINGS);
             dir = StoreTests.newDirectory(random);
-            if (dir instanceof MockDirectoryWrapper) {
-                ((MockDirectoryWrapper) dir).setPreventDoubleWrite(preventDoubleWrite);
-            }
             this.random = random;
         }
 
@@ -530,10 +490,6 @@ public class StoreTests extends ESTestCase {
             return dir;
         }
 
-        @Override
-        public long throttleTimeInNanos() {
-            return random.nextInt(1000);
-        }
     }
 
     public static void assertConsistent(Store store, Store.MetadataSnapshot metadata) throws IOException {
@@ -812,7 +768,7 @@ public class StoreTests extends ESTestCase {
             initialStoreSize += store.directory().fileLength(extraFiles);
         }
         StoreStats stats = store.stats();
-        assertEquals(stats.getSize().bytes(), initialStoreSize);
+        assertEquals(stats.getSize().getBytes(), initialStoreSize);
 
         Directory dir = store.directory();
         final long length;
@@ -882,8 +838,8 @@ public class StoreTests extends ESTestCase {
     }
 
     protected Store.MetadataSnapshot createMetaDataSnapshot() {
-        StoreFileMetaData storeFileMetaData1 = new StoreFileMetaData("segments", 1, "666");
-        StoreFileMetaData storeFileMetaData2 = new StoreFileMetaData("no_segments", 1, "666");
+        StoreFileMetaData storeFileMetaData1 = new StoreFileMetaData("segments", 1, "666", MIN_SUPPORTED_LUCENE_VERSION);
+        StoreFileMetaData storeFileMetaData2 = new StoreFileMetaData("no_segments", 1, "666", MIN_SUPPORTED_LUCENE_VERSION);
         Map<String, StoreFileMetaData> storeFileMetaDataMap = new HashMap<>();
         storeFileMetaDataMap.put(storeFileMetaData1.name(), storeFileMetaData1);
         storeFileMetaDataMap.put(storeFileMetaData2.name(), storeFileMetaData2);
@@ -909,7 +865,7 @@ public class StoreTests extends ESTestCase {
         String translogId = "a translog id";
         commitData.put(Engine.SYNC_COMMIT_ID, syncId);
         commitData.put(Translog.TRANSLOG_GENERATION_KEY, translogId);
-        writer.setCommitData(commitData);
+        writer.setLiveCommitData(commitData.entrySet());
         writer.commit();
         writer.close();
         Store.MetadataSnapshot metadata;
@@ -963,11 +919,8 @@ public class StoreTests extends ESTestCase {
         }
         writer.commit();
         writer.close();
-        MockDirectoryWrapper leaf = DirectoryUtils.getLeaf(store.directory(), MockDirectoryWrapper.class);
-        if (leaf != null) {
-            leaf.setPreventDoubleWrite(false); // I do this on purpose
-        }
         SegmentInfos segmentCommitInfos = store.readLastCommittedSegmentsInfo();
+        store.directory().deleteFile(segmentCommitInfos.getSegmentsFileName());
         try (IndexOutput out = store.directory().createOutput(segmentCommitInfos.getSegmentsFileName(), IOContext.DEFAULT)) {
             // empty file
         }
@@ -1002,10 +955,6 @@ public class StoreTests extends ESTestCase {
         assertTrue(Store.canOpenIndex(logger, tempDir, shardId, (id, l) -> new DummyShardLock(id)));
 
         DirectoryService directoryService = new DirectoryService(shardId, INDEX_SETTINGS) {
-            @Override
-            public long throttleTimeInNanos() {
-                return 0;
-            }
 
             @Override
             public Directory newDirectory() throws IOException {
@@ -1022,10 +971,6 @@ public class StoreTests extends ESTestCase {
         final ShardId shardId = new ShardId("index", "_na_", 1);
         final Directory dir = new RAMDirectory(); // I use ram dir to prevent that virusscanner being a PITA
         DirectoryService directoryService = new DirectoryService(shardId, INDEX_SETTINGS) {
-            @Override
-            public long throttleTimeInNanos() {
-                return 0;
-            }
 
             @Override
             public Directory newDirectory() throws IOException {
@@ -1062,10 +1007,6 @@ public class StoreTests extends ESTestCase {
         final ShardId shardId = new ShardId("index", "_na_", 1);
         final Directory dir = new RAMDirectory(); // I use ram dir to prevent that virusscanner being a PITA
         DirectoryService directoryService = new DirectoryService(shardId, INDEX_SETTINGS) {
-            @Override
-            public long throttleTimeInNanos() {
-                return 0;
-            }
 
             @Override
             public Directory newDirectory() throws IOException {

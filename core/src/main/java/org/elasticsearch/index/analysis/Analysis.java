@@ -19,11 +19,11 @@
 
 package org.elasticsearch.index.analysis;
 
-import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.TokenStream;
-import org.apache.lucene.analysis.LegacyNumericTokenStream;
+import org.apache.logging.log4j.Logger;
+import org.apache.lucene.analysis.CharArraySet;
 import org.apache.lucene.analysis.ar.ArabicAnalyzer;
 import org.apache.lucene.analysis.bg.BulgarianAnalyzer;
+import org.apache.lucene.analysis.bn.BengaliAnalyzer;
 import org.apache.lucene.analysis.br.BrazilianAnalyzer;
 import org.apache.lucene.analysis.ca.CatalanAnalyzer;
 import org.apache.lucene.analysis.ckb.SoraniAnalyzer;
@@ -53,13 +53,9 @@ import org.apache.lucene.analysis.ro.RomanianAnalyzer;
 import org.apache.lucene.analysis.ru.RussianAnalyzer;
 import org.apache.lucene.analysis.sv.SwedishAnalyzer;
 import org.apache.lucene.analysis.th.ThaiAnalyzer;
-import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tr.TurkishAnalyzer;
-import org.apache.lucene.analysis.util.CharArraySet;
 import org.apache.lucene.util.Version;
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.io.FileSystemUtils;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.env.Environment;
@@ -69,10 +65,9 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -82,12 +77,9 @@ import java.util.Set;
 
 import static java.util.Collections.unmodifiableMap;
 
-/**
- *
- */
 public class Analysis {
 
-    public static Version parseAnalysisVersion(Settings indexSettings, Settings settings, ESLogger logger) {
+    public static Version parseAnalysisVersion(Settings indexSettings, Settings settings, Logger logger) {
         // check for explicit version on the specific analyzer component
         String sVersion = settings.get("version");
         if (sVersion != null) {
@@ -109,18 +101,13 @@ public class Analysis {
 
     public static CharArraySet parseStemExclusion(Settings settings, CharArraySet defaultStemExclusion) {
         String value = settings.get("stem_exclusion");
-        if (value != null) {
-            if ("_none_".equals(value)) {
-                return CharArraySet.EMPTY_SET;
-            } else {
-                // LUCENE 4 UPGRADE: Should be settings.getAsBoolean("stem_exclusion_case", false)?
-                return new CharArraySet(Strings.commaDelimitedListToSet(value), false);
-            }
+        if ("_none_".equals(value)) {
+            return CharArraySet.EMPTY_SET;
         }
-        String[] stemExclusion = settings.getAsArray("stem_exclusion", null);
+        List<String> stemExclusion = settings.getAsList("stem_exclusion", null);
         if (stemExclusion != null) {
             // LUCENE 4 UPGRADE: Should be settings.getAsBoolean("stem_exclusion_case", false)?
-            return new CharArraySet(Arrays.asList(stemExclusion), false);
+            return new CharArraySet(stemExclusion, false);
         } else {
             return defaultStemExclusion;
         }
@@ -132,6 +119,7 @@ public class Analysis {
         namedStopWords.put("_arabic_", ArabicAnalyzer.getDefaultStopSet());
         namedStopWords.put("_armenian_", ArmenianAnalyzer.getDefaultStopSet());
         namedStopWords.put("_basque_", BasqueAnalyzer.getDefaultStopSet());
+        namedStopWords.put("_bengali_", BengaliAnalyzer.getDefaultStopSet());
         namedStopWords.put("_brazilian_", BrazilianAnalyzer.getDefaultStopSet());
         namedStopWords.put("_bulgarian_", BulgarianAnalyzer.getDefaultStopSet());
         namedStopWords.put("_catalan_", CatalanAnalyzer.getDefaultStopSet());
@@ -172,7 +160,7 @@ public class Analysis {
             if ("_none_".equals(value)) {
                 return CharArraySet.EMPTY_SET;
             } else {
-                return resolveNamedWords(Strings.commaDelimitedListToSet(value), namedWords, ignoreCase);
+                return resolveNamedWords(settings.getAsList(name), namedWords, ignoreCase);
             }
         }
         List<String> pathLoadedWords = getWordList(env, settings, name);
@@ -187,11 +175,14 @@ public class Analysis {
     }
 
     public static CharArraySet parseArticles(Environment env, Settings settings) {
-        return parseWords(env, settings, "articles", null, null, settings.getAsBoolean("articles_case", false));
+        boolean articlesCase = settings.getAsBoolean("articles_case", false);
+        return parseWords(env, settings, "articles", null, null, articlesCase);
     }
 
-    public static CharArraySet parseStopWords(Environment env, Settings settings, CharArraySet defaultStopWords) {
-        return parseStopWords(env, settings, defaultStopWords, settings.getAsBoolean("stopwords_case", false));
+    public static CharArraySet parseStopWords(Environment env, Settings settings,
+                                              CharArraySet defaultStopWords) {
+        boolean stopwordsCase = settings.getAsBoolean("stopwords_case", false);
+        return parseStopWords(env, settings, defaultStopWords, stopwordsCase);
     }
 
     public static CharArraySet parseStopWords(Environment env, Settings settings, CharArraySet defaultStopWords, boolean ignoreCase) {
@@ -218,7 +209,8 @@ public class Analysis {
         if (wordList == null) {
             return null;
         }
-        return new CharArraySet(wordList, settings.getAsBoolean(settingsPrefix + "_case", false));
+        boolean ignoreCase = settings.getAsBoolean(settingsPrefix + "_case", false);
+        return new CharArraySet(wordList, ignoreCase);
     }
 
     /**
@@ -232,17 +224,17 @@ public class Analysis {
         String wordListPath = settings.get(settingPrefix + "_path", null);
 
         if (wordListPath == null) {
-            String[] explicitWordList = settings.getAsArray(settingPrefix, null);
+            List<String> explicitWordList = settings.getAsList(settingPrefix, null);
             if (explicitWordList == null) {
                 return null;
             } else {
-                return Arrays.asList(explicitWordList);
+                return explicitWordList;
             }
         }
 
         final Path path = env.configFile().resolve(wordListPath);
 
-        try (BufferedReader reader = FileSystemUtils.newBufferedReader(path.toUri().toURL(), StandardCharsets.UTF_8)) {
+        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             return loadWordList(reader, "#");
         } catch (CharacterCodingException ex) {
             String message = String.format(Locale.ROOT,
@@ -293,7 +285,7 @@ public class Analysis {
         }
         final Path path = env.configFile().resolve(filePath);
         try {
-            return FileSystemUtils.newBufferedReader(path.toUri().toURL(), StandardCharsets.UTF_8);
+            return Files.newBufferedReader(path, StandardCharsets.UTF_8);
         } catch (CharacterCodingException ex) {
             String message = String.format(Locale.ROOT,
                 "Unsupported character encoding detected while reading %s_path: %s files must be UTF-8 encoded",

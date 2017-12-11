@@ -23,19 +23,19 @@ import org.elasticsearch.Version;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public final class TcpTransportChannel<Channel> implements TransportChannel {
-    private final TcpTransport<Channel> transport;
-    protected final Version version;
-    protected final String action;
-    protected final long requestId;
+public final class TcpTransportChannel implements TransportChannel {
+    private final TcpTransport transport;
+    private final Version version;
+    private final String action;
+    private final long requestId;
     private final String profileName;
     private final long reservedBytes;
     private final AtomicBoolean released = new AtomicBoolean();
     private final String channelType;
-    private final Channel channel;
+    private final TcpChannel channel;
 
-    public TcpTransportChannel(TcpTransport<Channel> transport, Channel channel, String channelType, String action,
-                               long requestId, Version version, String profileName, long reservedBytes) {
+    TcpTransportChannel(TcpTransport transport, TcpChannel channel, String channelType, String action,
+                        long requestId, Version version, String profileName, long reservedBytes) {
         this.version = version;
         this.channel = channel;
         this.transport = transport;
@@ -52,11 +52,6 @@ public final class TcpTransportChannel<Channel> implements TransportChannel {
     }
 
     @Override
-    public String action() {
-        return this.action;
-    }
-
-    @Override
     public void sendResponse(TransportResponse response) throws IOException {
         sendResponse(response, TransportResponseOptions.EMPTY);
     }
@@ -66,7 +61,7 @@ public final class TcpTransportChannel<Channel> implements TransportChannel {
         try {
             transport.sendResponse(version, channel, response, requestId, action, options);
         } finally {
-            release();
+            release(false);
         }
     }
 
@@ -75,24 +70,21 @@ public final class TcpTransportChannel<Channel> implements TransportChannel {
         try {
             transport.sendErrorResponse(version, channel, exception, requestId, action);
         } finally {
-            release();
+            release(true);
         }
     }
+
     private Exception releaseBy;
 
-    private void release() {
-        // attempt to release once atomically
-        if (released.compareAndSet(false, true) == false) {
-            throw new IllegalStateException("reserved bytes are already released", releaseBy);
-        } else {
+    private void release(boolean isExceptionResponse) {
+        if (released.compareAndSet(false, true)) {
             assert (releaseBy = new Exception()) != null; // easier to debug if it's already closed
+            transport.getInFlightRequestBreaker().addWithoutBreaking(-reservedBytes);
+        } else if (isExceptionResponse == false) {
+            // only fail if we are not sending an error - we might send the error triggered by the previous
+            // sendResponse call
+            throw new IllegalStateException("reserved bytes are already released", releaseBy);
         }
-        transport.getInFlightRequestBreaker().addWithoutBreaking(-reservedBytes);
-    }
-
-    @Override
-    public long getRequestId() {
-        return requestId;
     }
 
     @Override
@@ -100,9 +92,13 @@ public final class TcpTransportChannel<Channel> implements TransportChannel {
         return channelType;
     }
 
-    public Channel getChannel() {
-        return channel;
+    @Override
+    public Version getVersion() {
+        return version;
     }
 
+    public TcpChannel getChannel() {
+        return channel;
+    }
 }
 

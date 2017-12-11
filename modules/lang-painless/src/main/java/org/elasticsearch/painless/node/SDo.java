@@ -73,7 +73,7 @@ public final class SDo extends AStatement {
             throw createError(new IllegalArgumentException("Extraneous do while loop."));
         }
 
-        condition.expected = Definition.BOOLEAN_TYPE;
+        condition.expected = locals.getDefinition().booleanType;
         condition.analyze(locals);
         condition = condition.cast(locals);
 
@@ -124,5 +124,10 @@ public final class SDo extends AStatement {
 
         writer.goTo(start);
         writer.mark(end);
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(condition, block);
     }
 }

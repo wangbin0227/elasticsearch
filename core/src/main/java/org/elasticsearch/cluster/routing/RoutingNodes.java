@@ -21,7 +21,9 @@ package org.elasticsearch.cluster.routing;
 
 import com.carrotsearch.hppc.ObjectIntHashMap;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.util.CollectionUtil;
+import org.elasticsearch.Assertions;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
@@ -30,7 +32,6 @@ import org.elasticsearch.cluster.routing.UnassignedInfo.AllocationStatus;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.collect.Tuple;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
 
@@ -39,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -166,7 +168,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
 
         Recoveries.getOrAdd(recoveriesPerNode, routing.currentNodeId()).addIncoming(howMany);
 
-        if (routing.isPeerRecovery()) {
+        if (routing.recoverySource().getType() == RecoverySource.Type.PEER) {
             // add/remove corresponding outgoing recovery on node with primary shard
             if (primary == null) {
                 throw new IllegalStateException("shard is peer recovering but primary is unassigned");
@@ -177,7 +179,8 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                 // primary is done relocating, move non-primary recoveries from old primary to new primary
                 int numRecoveringReplicas = 0;
                 for (ShardRouting assigned : assignedShards(routing.shardId())) {
-                    if (assigned.primary() == false && assigned.isPeerRecovery()) {
+                    if (assigned.primary() == false && assigned.initializing() &&
+                        assigned.recoverySource().getType() == RecoverySource.Type.PEER) {
                         numRecoveringReplicas++;
                     }
                 }
@@ -198,7 +201,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
     @Nullable
     private ShardRouting findAssignedPrimaryIfPeerRecovery(ShardRouting routing) {
         ShardRouting primary = null;
-        if (routing.isPeerRecovery()) {
+        if (routing.recoverySource() != null && routing.recoverySource().getType() == RecoverySource.Type.PEER) {
             List<ShardRouting> shardRoutings = assignedShards.get(routing.shardId());
             if (shardRoutings != null) {
                 for (ShardRouting shardRouting : shardRoutings) {
@@ -318,14 +321,23 @@ public class RoutingNodes implements Iterable<RoutingNode> {
     /**
      * Returns one active replica shard for the given shard id or <code>null</code> if
      * no active replica is found.
+     *
+     * Since replicas could possibly be on nodes with a older version of ES than
+     * the primary is, this will return replicas on the highest version of ES.
+     *
      */
-    public ShardRouting activeReplica(ShardId shardId) {
-        for (ShardRouting shardRouting : assignedShards(shardId)) {
-            if (!shardRouting.primary() && shardRouting.active()) {
-                return shardRouting;
-            }
-        }
-        return null;
+    public ShardRouting activeReplicaWithHighestVersion(ShardId shardId) {
+        // It's possible for replicaNodeVersion to be null, when deassociating dead nodes
+        // that have been removed, the shards are failed, and part of the shard failing
+        // calls this method with an out-of-date RoutingNodes, where the version might not
+        // be accessible. Therefore, we need to protect against the version being null
+        // (meaning the node will be going away).
+        return assignedShards(shardId).stream()
+                .filter(shr -> !shr.primary() && shr.active())
+                .filter(shr -> node(shr.currentNodeId()) != null)
+                .max(Comparator.comparing(shr -> node(shr.currentNodeId()).node(),
+                                Comparator.nullsFirst(Comparator.comparing(DiscoveryNode::getVersion))))
+                .orElse(null);
     }
 
     /**
@@ -390,7 +402,8 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         return shards;
     }
 
-    public String prettyPrint() {
+    @Override
+    public String toString() {
         StringBuilder sb = new StringBuilder("routing_nodes:\n");
         for (RoutingNode routingNode : this) {
             sb.append(routingNode.prettyPrint());
@@ -420,7 +433,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         }
         addRecovery(initializedShard);
         assignedShardsAdd(initializedShard);
-        routingChangesObserver.shardInitialized(unassignedShard);
+        routingChangesObserver.shardInitialized(unassignedShard, initializedShard);
         return initializedShard;
     }
 
@@ -449,9 +462,12 @@ public class RoutingNodes implements Iterable<RoutingNode> {
      *
      * Moves the initializing shard to started. If the shard is a relocation target, also removes the relocation source.
      *
+     * If the started shard is a primary relocation target, this also reinitializes currently initializing replicas as their
+     * recovery source changes
+     *
      * @return the started shard
      */
-    public ShardRouting startShard(ESLogger logger, ShardRouting initializingShard, RoutingChangesObserver routingChangesObserver) {
+    public ShardRouting startShard(Logger logger, ShardRouting initializingShard, RoutingChangesObserver routingChangesObserver) {
         ensureMutable();
         ShardRouting startedShard = started(initializingShard);
         logger.trace("{} marked shard as started (routing: {})", initializingShard.shardId(), initializingShard);
@@ -466,6 +482,30 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                 + initializingShard + " but was: " + relocationSourceShard.getTargetRelocatingShard();
             remove(relocationSourceShard);
             routingChangesObserver.relocationCompleted(relocationSourceShard);
+
+            // if this is a primary shard with ongoing replica recoveries, reinitialize them as their recovery source changed
+            if (startedShard.primary()) {
+                List<ShardRouting> assignedShards = assignedShards(startedShard.shardId());
+                // copy list to prevent ConcurrentModificationException
+                for (ShardRouting routing : new ArrayList<>(assignedShards)) {
+                    if (routing.initializing() && routing.primary() == false) {
+                        if (routing.isRelocationTarget()) {
+                            // find the relocation source
+                            ShardRouting sourceShard = getByAllocationId(routing.shardId(), routing.allocationId().getRelocationId());
+                            // cancel relocation and start relocation to same node again
+                            ShardRouting startedReplica = cancelRelocation(sourceShard);
+                            remove(routing);
+                            routingChangesObserver.shardFailed(routing,
+                                new UnassignedInfo(UnassignedInfo.Reason.REINITIALIZED, "primary changed"));
+                            relocateShard(startedReplica, sourceShard.relocatingNodeId(),
+                                sourceShard.getExpectedShardSize(), routingChangesObserver);
+                        } else {
+                            ShardRouting reinitializedReplica = reinitReplica(routing);
+                            routingChangesObserver.initializedReplicaReinitialized(routing, reinitializedReplica);
+                        }
+                    }
+                }
+            }
         }
         return startedShard;
     }
@@ -483,7 +523,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
      * - If shard is a (primary or replica) relocation target, this also clears the relocation information on the source shard.
      *
      */
-    public void failShard(ESLogger logger, ShardRouting failedShard, UnassignedInfo unassignedInfo, IndexMetaData indexMetaData,
+    public void failShard(Logger logger, ShardRouting failedShard, UnassignedInfo unassignedInfo, IndexMetaData indexMetaData,
                           RoutingChangesObserver routingChangesObserver) {
         ensureMutable();
         assert failedShard.assignedToNode() : "only assigned shards can be failed";
@@ -535,8 +575,19 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         // fail actual shard
         if (failedShard.initializing()) {
             if (failedShard.relocatingNodeId() == null) {
-                // initializing shard that is not relocation target, just move to unassigned
-                moveToUnassigned(failedShard, unassignedInfo);
+                if (failedShard.primary()) {
+                    // promote active replica to primary if active replica exists (only the case for shadow replicas)
+                    ShardRouting activeReplica = activeReplicaWithHighestVersion(failedShard.shardId());
+                    if (activeReplica == null) {
+                        moveToUnassigned(failedShard, unassignedInfo);
+                    } else {
+                        movePrimaryToUnassignedAndDemoteToReplica(failedShard, unassignedInfo);
+                        promoteReplicaToPrimary(activeReplica, indexMetaData, routingChangesObserver);
+                    }
+                } else {
+                    // initializing shard that is not relocation target, just move to unassigned
+                    moveToUnassigned(failedShard, unassignedInfo);
+                }
             } else {
                 // The shard is a target of a relocating shard. In that case we only need to remove the target shard and cancel the source
                 // relocation. No shard is left unassigned
@@ -555,20 +606,12 @@ public class RoutingNodes implements Iterable<RoutingNode> {
             assert failedShard.active();
             if (failedShard.primary()) {
                 // promote active replica to primary if active replica exists
-                ShardRouting activeReplica = activeReplica(failedShard.shardId());
+                ShardRouting activeReplica = activeReplicaWithHighestVersion(failedShard.shardId());
                 if (activeReplica == null) {
                     moveToUnassigned(failedShard, unassignedInfo);
                 } else {
-                    // if the activeReplica was relocating before this call to failShard, its relocation was cancelled above when we
-                    // failed initializing replica shards (and moved replica relocation source back to started)
-                    assert activeReplica.started() : "replica relocation should have been cancelled: " + activeReplica;
                     movePrimaryToUnassignedAndDemoteToReplica(failedShard, unassignedInfo);
-                    ShardRouting primarySwappedCandidate = promoteActiveReplicaShardToPrimary(activeReplica);
-                    routingChangesObserver.replicaPromoted(activeReplica);
-                    if (IndexMetaData.isIndexUsingShadowReplicas(indexMetaData.getSettings())) {
-                        ShardRouting initializedShard = reinitShadowPrimary(primarySwappedCandidate);
-                        routingChangesObserver.startedPrimaryReinitialized(primarySwappedCandidate, initializedShard);
-                    }
+                    promoteReplicaToPrimary(activeReplica, indexMetaData, routingChangesObserver);
                 }
             } else {
                 assert failedShard.primary() == false;
@@ -582,6 +625,15 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         }
         assert node(failedShard.currentNodeId()).getByShardId(failedShard.shardId()) == null : "failedShard " + failedShard +
             " was matched but wasn't removed";
+    }
+
+    private void promoteReplicaToPrimary(ShardRouting activeReplica, IndexMetaData indexMetaData,
+                                         RoutingChangesObserver routingChangesObserver) {
+        // if the activeReplica was relocating before this call to failShard, its relocation was cancelled earlier when we
+        // failed initializing replica shards (and moved replica relocation source back to started)
+        assert activeReplica.started() : "replica relocation should have been cancelled: " + activeReplica;
+        ShardRouting primarySwappedCandidate = promoteActiveReplicaShardToPrimary(activeReplica);
+        routingChangesObserver.replicaPromoted(activeReplica);
     }
 
     /**
@@ -627,7 +679,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
     private ShardRouting promoteActiveReplicaShardToPrimary(ShardRouting replicaShard) {
         assert replicaShard.active() : "non-active shard cannot be promoted to primary: " + replicaShard;
         assert replicaShard.primary() == false : "primary shard cannot be promoted to primary: " + replicaShard;
-        ShardRouting primaryShard = replicaShard.moveToPrimary();
+        ShardRouting primaryShard = replicaShard.moveActiveReplicaToPrimary();
         updateAssigned(replicaShard, primaryShard);
         return primaryShard;
     }
@@ -697,14 +749,12 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         assert false : "No shard found to remove";
     }
 
-    private ShardRouting reinitShadowPrimary(ShardRouting candidate) {
-        if (candidate.relocating()) {
-            cancelRelocation(candidate);
-        }
-        ShardRouting reinitializedShard = candidate.reinitializeShard();
-        updateAssigned(candidate, reinitializedShard);
-        inactivePrimaryCount++;
-        inactiveShardCount++;
+    private ShardRouting reinitReplica(ShardRouting shard) {
+        assert shard.primary() == false : "shard must be a replica: " + shard;
+        assert shard.initializing() : "can only reinitialize an initializing replica: " + shard;
+        assert shard.isRelocationTarget() == false : "replication target cannot be reinitialized: " + shard;
+        ShardRouting reinitializedShard = shard.reinitializeReplicaShard();
+        updateAssigned(shard, reinitializedShard);
         return reinitializedShard;
     }
 
@@ -738,7 +788,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         assert shard.unassigned() == false : "only assigned shards can be moved to unassigned (" + shard + ")";
         assert shard.primary() : "only primary can be demoted to replica (" + shard + ")";
         remove(shard);
-        ShardRouting unassigned = shard.moveToUnassigned(unassignedInfo).moveFromPrimary();
+        ShardRouting unassigned = shard.moveToUnassigned(unassignedInfo).moveUnassignedFromPrimary();
         unassignedShards.add(unassigned);
         return unassigned;
     }
@@ -832,7 +882,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                                                                 currInfo.getNumFailedAllocations(), currInfo.getUnassignedTimeInNanos(),
                                                                 currInfo.getUnassignedTimeInMillis(), currInfo.isDelayed(),
                                                                 allocationStatus);
-                    ShardRouting updatedShard = shard.updateUnassignedInfo(newInfo);
+                    ShardRouting updatedShard = shard.updateUnassigned(newInfo, shard.recoverySource());
                     changes.unassignedInfoUpdated(shard, newInfo);
                     shard = updatedShard;
                 }
@@ -891,14 +941,16 @@ public class RoutingNodes implements Iterable<RoutingNode> {
             }
 
             /**
-             * updates the unassigned info on the current unassigned shard
+             * updates the unassigned info and recovery source on the current unassigned shard
              *
              * @param  unassignedInfo the new unassigned info to use
+             * @param  recoverySource the new recovery source to use
              * @return the shard with unassigned info updated
              */
-            public ShardRouting updateUnassignedInfo(UnassignedInfo unassignedInfo, RoutingChangesObserver changes) {
+            public ShardRouting updateUnassigned(UnassignedInfo unassignedInfo, RecoverySource recoverySource,
+                                                 RoutingChangesObserver changes) {
                 nodes.ensureMutable();
-                ShardRouting updatedShardRouting = current.updateUnassignedInfo(unassignedInfo);
+                ShardRouting updatedShardRouting = current.updateUnassigned(unassignedInfo, recoverySource);
                 changes.unassignedInfoUpdated(current, unassignedInfo);
                 updateShardRouting(updatedShardRouting);
                 return updatedShardRouting;
@@ -965,9 +1017,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
      *         this method does nothing.
      */
     public static boolean assertShardStats(RoutingNodes routingNodes) {
-        boolean run = false;
-        assert (run = true); // only run if assertions are enabled!
-        if (!run) {
+        if (!Assertions.ENABLED) {
             return true;
         }
         int unassignedPrimaryCount = 0;
@@ -994,26 +1044,27 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                 indicesAndShards.put(shard.index(), Math.max(i, shard.id()));
             }
         }
+
         // Assert that the active shard routing are identical.
         Set<Map.Entry<Index, Integer>> entries = indicesAndShards.entrySet();
-        final List<ShardRouting> shards = new ArrayList<>();
-        for (Map.Entry<Index, Integer> e : entries) {
-            Index index = e.getKey();
+
+        final Map<ShardId, HashSet<ShardRouting>> shardsByShardId = new HashMap<>();
+        for (final RoutingNode routingNode: routingNodes) {
+            for (final ShardRouting shardRouting : routingNode) {
+                final HashSet<ShardRouting> shards =
+                        shardsByShardId.computeIfAbsent(new ShardId(shardRouting.index(), shardRouting.id()), k -> new HashSet<>());
+                shards.add(shardRouting);
+            }
+        }
+
+        for (final Map.Entry<Index, Integer> e : entries) {
+            final Index index = e.getKey();
             for (int i = 0; i < e.getValue(); i++) {
-                for (RoutingNode routingNode : routingNodes) {
-                    for (ShardRouting shardRouting : routingNode) {
-                        if (shardRouting.index().equals(index) && shardRouting.id() == i) {
-                            shards.add(shardRouting);
-                        }
-                    }
-                }
-                List<ShardRouting> mutableShardRoutings = routingNodes.assignedShards(new ShardId(index, i));
-                assert mutableShardRoutings.size() == shards.size();
-                for (ShardRouting r : mutableShardRoutings) {
-                    assert shards.contains(r);
-                    shards.remove(r);
-                }
-                assert shards.isEmpty();
+                final ShardId shardId = new ShardId(index, i);
+                final HashSet<ShardRouting> shards = shardsByShardId.get(shardId);
+                final List<ShardRouting> mutableShardRoutings = routingNodes.assignedShards(shardId);
+                assert (shards == null && mutableShardRoutings.size() == 0)
+                        || (shards != null && shards.size() == mutableShardRoutings.size() && shards.containsAll(mutableShardRoutings));
             }
         }
 
@@ -1040,9 +1091,9 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                     if (routing.initializing()) {
                         incoming++;
                     }
-                    if (routing.primary() && routing.isPeerRecovery() == false) {
+                    if (routing.primary() && routing.isRelocationTarget() == false) {
                         for (ShardRouting assigned : routingNodes.assignedShards.get(routing.shardId())) {
-                            if (assigned.isPeerRecovery()) {
+                            if (assigned.initializing() && assigned.recoverySource().getType() == RecoverySource.Type.PEER) {
                                 outgoing++;
                             }
                         }

@@ -29,12 +29,14 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.geo.RandomGeoGenerator;
 
 import java.io.IOException;
+import java.util.function.DoubleSupplier;
 
-import static org.hamcrest.Matchers.is;
 import static org.elasticsearch.common.geo.GeoHashUtils.stringEncode;
+import static org.elasticsearch.test.EqualsHashCodeTestUtils.checkEqualsAndHashCode;
+import static org.hamcrest.Matchers.is;
 
 public class GeoPointParsingTests  extends ESTestCase {
-    static double TOLERANCE = 1E-5;
+    private static final double TOLERANCE = 1E-5;
 
     public void testGeoPointReset() throws IOException {
         double lat = 1 + randomDouble() * 89;
@@ -57,32 +59,14 @@ public class GeoPointParsingTests  extends ESTestCase {
     }
 
     public void testEqualsHashCodeContract() {
-        // generate a random geopoint
-        final GeoPoint x = RandomGeoGenerator.randomPoint(random());
-        final GeoPoint y = new GeoPoint(x.lat(), x.lon());
-        final GeoPoint z = new GeoPoint(y.lat(), y.lon());
-        // GeoPoint doesn't care about coordinate system bounds, this simply validates inequality
-        final GeoPoint a = new GeoPoint(x.lat() + randomIntBetween(1, 5), x.lon() + randomIntBetween(1, 5));
-
-        /** equality test */
-        // reflexive
-        assertTrue(x.equals(x));
-        // symmetry
-        assertTrue(x.equals(y));
-        // transitivity
-        assertTrue(y.equals(z));
-        assertTrue(x.equals(z));
-        // inequality
-        assertFalse(x.equals(a));
-
-        /** hashCode test */
-        // symmetry
-        assertTrue(x.hashCode() == y.hashCode());
-        // transitivity
-        assertTrue(y.hashCode() == z.hashCode());
-        assertTrue(x.hashCode() == z.hashCode());
-        // inequality
-        assertFalse(x.hashCode() == a.hashCode());
+        // GeoPoint doesn't care about coordinate system bounds, this simply validates equality and hashCode.
+        final DoubleSupplier randomDelta = () -> randomValueOtherThan(0.0, () -> randomDoubleBetween(-1000000, 1000000, true));
+        checkEqualsAndHashCode(RandomGeoGenerator.randomPoint(random()), GeoPoint::new,
+            pt -> new GeoPoint(pt.lat() + randomDelta.getAsDouble(), pt.lon()));
+        checkEqualsAndHashCode(RandomGeoGenerator.randomPoint(random()), GeoPoint::new,
+            pt -> new GeoPoint(pt.lat(), pt.lon() + randomDelta.getAsDouble()));
+        checkEqualsAndHashCode(RandomGeoGenerator.randomPoint(random()), GeoPoint::new,
+            pt -> new GeoPoint(pt.lat() + randomDelta.getAsDouble(), pt.lon() + randomDelta.getAsDouble()));
     }
 
     public void testGeoPointParsing() throws IOException {
@@ -110,15 +94,10 @@ public class GeoPointParsingTests  extends ESTestCase {
         content.endObject();
         content.endObject();
 
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
-
-        try {
-            GeoUtils.parseGeoPoint(parser);
-            fail("Expected ElasticsearchParseException");
-        } catch (ElasticsearchParseException e) {
-            assertThat(e.getMessage(), is("field must be either [lat], [lon] or [geohash]"));
-        }
+        Exception e = expectThrows(ElasticsearchParseException.class, () -> GeoUtils.parseGeoPoint(parser));
+        assertThat(e.getMessage(), is("field must be either [lat], [lon] or [geohash]"));
     }
 
     public void testInvalidPointLatHashMix() throws IOException {
@@ -127,15 +106,11 @@ public class GeoPointParsingTests  extends ESTestCase {
         content.field("lat", 0).field("geohash", stringEncode(0d, 0d));
         content.endObject();
 
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
 
-        try {
-            GeoUtils.parseGeoPoint(parser);
-            fail("Expected ElasticsearchParseException");
-        } catch (ElasticsearchParseException e) {
-            assertThat(e.getMessage(), is("field must be either lat/lon or geohash"));
-        }
+        Exception e = expectThrows(ElasticsearchParseException.class, () -> GeoUtils.parseGeoPoint(parser));
+        assertThat(e.getMessage(), is("field must be either lat/lon or geohash"));
     }
 
     public void testInvalidPointLonHashMix() throws IOException {
@@ -144,15 +119,11 @@ public class GeoPointParsingTests  extends ESTestCase {
         content.field("lon", 0).field("geohash", stringEncode(0d, 0d));
         content.endObject();
 
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
 
-        try {
-            GeoUtils.parseGeoPoint(parser);
-            fail("Expected ElasticsearchParseException");
-        } catch (ElasticsearchParseException e) {
-            assertThat(e.getMessage(), is("field must be either lat/lon or geohash"));
-        }
+        Exception e = expectThrows(ElasticsearchParseException.class, () -> GeoUtils.parseGeoPoint(parser));
+        assertThat(e.getMessage(), is("field must be either lat/lon or geohash"));
     }
 
     public void testInvalidField() throws IOException {
@@ -161,47 +132,43 @@ public class GeoPointParsingTests  extends ESTestCase {
         content.field("lon", 0).field("lat", 0).field("test", 0);
         content.endObject();
 
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
 
-        try {
-            GeoUtils.parseGeoPoint(parser);
-            fail("Expected ElasticsearchParseException");
-        } catch (ElasticsearchParseException e) {
-            assertThat(e.getMessage(), is("field must be either [lat], [lon] or [geohash]"));
-        }
+        Exception e = expectThrows(ElasticsearchParseException.class, () -> GeoUtils.parseGeoPoint(parser));
+        assertThat(e.getMessage(), is("field must be either [lat], [lon] or [geohash]"));
     }
 
-    private static XContentParser objectLatLon(double lat, double lon) throws IOException {
+    private XContentParser objectLatLon(double lat, double lon) throws IOException {
         XContentBuilder content = JsonXContent.contentBuilder();
         content.startObject();
         content.field("lat", lat).field("lon", lon);
         content.endObject();
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
         return parser;
     }
 
-    private static XContentParser arrayLatLon(double lat, double lon) throws IOException {
+    private XContentParser arrayLatLon(double lat, double lon) throws IOException {
         XContentBuilder content = JsonXContent.contentBuilder();
         content.startArray().value(lon).value(lat).endArray();
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
         return parser;
     }
 
-    private static XContentParser stringLatLon(double lat, double lon) throws IOException {
+    private XContentParser stringLatLon(double lat, double lon) throws IOException {
         XContentBuilder content = JsonXContent.contentBuilder();
         content.value(Double.toString(lat) + ", " + Double.toString(lon));
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
         return parser;
     }
 
-    private static XContentParser geohash(double lat, double lon) throws IOException {
+    private XContentParser geohash(double lat, double lon) throws IOException {
         XContentBuilder content = JsonXContent.contentBuilder();
         content.value(stringEncode(lon, lat));
-        XContentParser parser = JsonXContent.jsonXContent.createParser(content.bytes());
+        XContentParser parser = createParser(JsonXContent.jsonXContent, content.bytes());
         parser.nextToken();
         return parser;
     }

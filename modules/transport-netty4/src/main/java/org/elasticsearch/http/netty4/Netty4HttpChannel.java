@@ -20,6 +20,7 @@
 package org.elasticsearch.http.netty4;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelPromise;
@@ -28,7 +29,7 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
@@ -83,17 +84,21 @@ final class Netty4HttpChannel extends AbstractRestChannel {
     }
 
     @Override
-    public BytesStreamOutput newBytesOutput() {
+    protected BytesStreamOutput newBytesOutput() {
         return new ReleasableBytesStreamOutput(transport.bigArrays);
     }
-
 
     @Override
     public void sendResponse(RestResponse response) {
         // if the response object was created upstream, then use it;
         // otherwise, create a new one
         ByteBuf buffer = Netty4Utils.toByteBuf(response.content());
-        FullHttpResponse resp = newResponse(buffer);
+        final FullHttpResponse resp;
+        if (HttpMethod.HEAD.equals(nettyRequest.method())) {
+            resp = newResponse(Unpooled.EMPTY_BUFFER);
+        } else {
+            resp = newResponse(buffer);
+        }
         resp.setStatus(getStatus(response.status()));
 
         Netty4CorsHandler.setCorsResponseHeaders(nettyRequest, resp, transport.getCorsConfig());
@@ -108,7 +113,8 @@ final class Netty4HttpChannel extends AbstractRestChannel {
         addCustomHeaders(resp, threadContext.getResponseHeaders());
 
         BytesReference content = response.content();
-        boolean release = content instanceof Releasable;
+        boolean releaseContent = content instanceof Releasable;
+        boolean releaseBytesStreamOutput = bytesOutputOrNull() instanceof ReleasableBytesStreamOutput;
         try {
             // If our response doesn't specify a content-type header, set one
             setHeaderField(resp, HttpHeaderNames.CONTENT_TYPE.toString(), response.contentType(), false);
@@ -119,24 +125,33 @@ final class Netty4HttpChannel extends AbstractRestChannel {
 
             final ChannelPromise promise = channel.newPromise();
 
-            if (release) {
+            if (releaseContent) {
                 promise.addListener(f -> ((Releasable)content).close());
-                release = false;
+            }
+
+            if (releaseBytesStreamOutput) {
+                promise.addListener(f -> bytesOutputOrNull().close());
             }
 
             if (isCloseConnection()) {
                 promise.addListener(ChannelFutureListener.CLOSE);
             }
 
+            final Object msg;
             if (pipelinedRequest != null) {
-                channel.writeAndFlush(pipelinedRequest.createHttpResponse(resp, promise));
+                msg = pipelinedRequest.createHttpResponse(resp, promise);
             } else {
-                channel.writeAndFlush(resp, promise);
+                msg = resp;
             }
-
+            channel.writeAndFlush(msg, promise);
+            releaseContent = false;
+            releaseBytesStreamOutput = false;
         } finally {
-            if (release) {
+            if (releaseContent) {
                 ((Releasable) content).close();
+            }
+            if (releaseBytesStreamOutput) {
+                bytesOutputOrNull().close();
             }
             if (pipelinedRequest != null) {
                 pipelinedRequest.release();
@@ -156,7 +171,7 @@ final class Netty4HttpChannel extends AbstractRestChannel {
 
     private void addCookies(HttpResponse resp) {
         if (transport.resetCookies) {
-            String cookieString = nettyRequest.headers().get(HttpHeaders.Names.COOKIE);
+            String cookieString = nettyRequest.headers().get(HttpHeaderNames.COOKIE);
             if (cookieString != null) {
                 Set<io.netty.handler.codec.http.cookie.Cookie> cookies = ServerCookieDecoder.STRICT.decode(cookieString);
                 if (!cookies.isEmpty()) {
@@ -185,8 +200,8 @@ final class Netty4HttpChannel extends AbstractRestChannel {
     // Determine if the request connection should be closed on completion.
     private boolean isCloseConnection() {
         final boolean http10 = isHttp10();
-        return HttpHeaderValues.CLOSE.equals(nettyRequest.headers().get(HttpHeaderNames.CONNECTION)) ||
-            (http10 && HttpHeaderValues.KEEP_ALIVE.equals(nettyRequest.headers().get(HttpHeaderNames.CONNECTION)) == false);
+        return HttpHeaderValues.CLOSE.contentEqualsIgnoreCase(nettyRequest.headers().get(HttpHeaderNames.CONNECTION)) ||
+            (http10 && !HttpHeaderValues.KEEP_ALIVE.contentEqualsIgnoreCase(nettyRequest.headers().get(HttpHeaderNames.CONNECTION)));
     }
 
     // Create a new {@link HttpResponse} to transmit the response for the netty request.

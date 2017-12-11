@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -63,7 +64,7 @@ public class IcuTokenizerFactory extends AbstractTokenizerFactory {
         Map<Integer, String> tailored = new HashMap<>();
 
         try {
-            String[] ruleFiles = settings.getAsArray(RULE_FILES);
+            List<String> ruleFiles = settings.getAsList(RULE_FILES);
 
             for (String scriptAndResourcePath : ruleFiles) {
                 int colonPos = scriptAndResourcePath.indexOf(":");
@@ -85,8 +86,8 @@ public class IcuTokenizerFactory extends AbstractTokenizerFactory {
                     String resourcePath = entry.getValue();
                     breakers[code] = parseRules(resourcePath, env);
                 }
-                // cjkAsWords is not configurable yet.
-                ICUTokenizerConfig config = new DefaultICUTokenizerConfig(true) {
+                // cjkAsWords nor myanmarAsWords are not configurable yet.
+                ICUTokenizerConfig config = new DefaultICUTokenizerConfig(true, true) {
                     @Override
                     public BreakIterator getBreakIterator(int script) {
                         if (breakers[script] != null) {

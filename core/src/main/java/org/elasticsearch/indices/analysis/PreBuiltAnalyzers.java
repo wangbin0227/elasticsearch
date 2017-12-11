@@ -19,8 +19,10 @@
 package org.elasticsearch.indices.analysis;
 
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.CharArraySet;
 import org.apache.lucene.analysis.ar.ArabicAnalyzer;
 import org.apache.lucene.analysis.bg.BulgarianAnalyzer;
+import org.apache.lucene.analysis.bn.BengaliAnalyzer;
 import org.apache.lucene.analysis.br.BrazilianAnalyzer;
 import org.apache.lucene.analysis.ca.CatalanAnalyzer;
 import org.apache.lucene.analysis.cjk.CJKAnalyzer;
@@ -58,7 +60,6 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.sv.SwedishAnalyzer;
 import org.apache.lucene.analysis.th.ThaiAnalyzer;
 import org.apache.lucene.analysis.tr.TurkishAnalyzer;
-import org.apache.lucene.analysis.util.CharArraySet;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.index.analysis.PatternAnalyzer;
@@ -68,9 +69,6 @@ import org.elasticsearch.indices.analysis.PreBuiltCacheFactory.CachingStrategy;
 
 import java.util.Locale;
 
-/**
- *
- */
 public enum PreBuiltAnalyzers {
 
     STANDARD(CachingStrategy.ELASTICSEARCH) {
@@ -181,6 +179,15 @@ public enum PreBuiltAnalyzers {
         @Override
         protected Analyzer create(Version version) {
             Analyzer a = new BasqueAnalyzer();
+            a.setVersion(version.luceneVersion);
+            return a;
+        }
+    },
+
+    BENGALI {
+        @Override
+        protected Analyzer create(Version version) {
+            Analyzer a = new BengaliAnalyzer();
             a.setVersion(version.luceneVersion);
             return a;
         }

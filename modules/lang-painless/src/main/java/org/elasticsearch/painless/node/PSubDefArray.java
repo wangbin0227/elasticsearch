@@ -34,7 +34,6 @@ import java.util.Set;
  * Represents an array load/store or shortcut on a def type.  (Internal only.)
  */
 final class PSubDefArray extends AStoreable {
-
     private AExpression index;
 
     PSubDefArray(Location location, AExpression index) {
@@ -54,18 +53,13 @@ final class PSubDefArray extends AStoreable {
         index.expected = index.actual;
         index = index.cast(locals);
 
-        actual = expected == null || explicit ? Definition.DEF_TYPE : expected;
+        actual = expected == null || explicit ? locals.getDefinition().DefType : expected;
     }
 
     @Override
     void write(MethodWriter writer, Globals globals) {
-        index.write(writer, globals);
-
-        writer.writeDebugInfo(location);
-
-        org.objectweb.asm.Type methodType =
-            org.objectweb.asm.Type.getMethodType(actual.type, Definition.DEF_TYPE.type, index.actual.type);
-        writer.invokeDefCall("arrayLoad", methodType, DefBootstrap.ARRAY_LOAD);
+        setup(writer, globals);
+        load(writer, globals);
     }
 
     @Override
@@ -85,7 +79,12 @@ final class PSubDefArray extends AStoreable {
 
     @Override
     void setup(MethodWriter writer, Globals globals) {
-        index.write(writer, globals);
+        // Current stack:                                                                    def
+        writer.dup();                                                                     // def, def
+        index.write(writer, globals);                                                     // def, def, unnormalized_index
+        org.objectweb.asm.Type methodType = org.objectweb.asm.Type.getMethodType(
+                index.actual.type, org.objectweb.asm.Type.getType(Object.class), index.actual.type);
+        writer.invokeDefCall("normalizeIndex", methodType, DefBootstrap.INDEX_NORMALIZE); // def, normalized_index
     }
 
     @Override
@@ -93,7 +92,7 @@ final class PSubDefArray extends AStoreable {
         writer.writeDebugInfo(location);
 
         org.objectweb.asm.Type methodType =
-            org.objectweb.asm.Type.getMethodType(actual.type, Definition.DEF_TYPE.type, index.actual.type);
+            org.objectweb.asm.Type.getMethodType(actual.type, org.objectweb.asm.Type.getType(Object.class), index.actual.type);
         writer.invokeDefCall("arrayLoad", methodType, DefBootstrap.ARRAY_LOAD);
     }
 
@@ -102,7 +101,13 @@ final class PSubDefArray extends AStoreable {
         writer.writeDebugInfo(location);
 
         org.objectweb.asm.Type methodType =
-            org.objectweb.asm.Type.getMethodType(Definition.VOID_TYPE.type, Definition.DEF_TYPE.type, index.actual.type, actual.type);
+            org.objectweb.asm.Type.getMethodType(
+                org.objectweb.asm.Type.getType(void.class), org.objectweb.asm.Type.getType(Object.class), index.actual.type, actual.type);
         writer.invokeDefCall("arrayStore", methodType, DefBootstrap.ARRAY_STORE);
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(prefix, index);
     }
 }

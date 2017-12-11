@@ -45,9 +45,6 @@ import org.elasticsearch.transport.TransportService;
 import java.io.IOException;
 import java.util.List;
 
-/**
- *
- */
 public class TransportNodesListGatewayMetaState extends TransportNodesAction<TransportNodesListGatewayMetaState.Request,
                                                                              TransportNodesListGatewayMetaState.NodesGatewayMetaState,
                                                                              TransportNodesListGatewayMetaState.NodeRequest,
@@ -55,19 +52,16 @@ public class TransportNodesListGatewayMetaState extends TransportNodesAction<Tra
 
     public static final String ACTION_NAME = "internal:gateway/local/meta_state";
 
-    private GatewayMetaState metaState;
+    private final GatewayMetaState metaState;
 
     @Inject
     public TransportNodesListGatewayMetaState(Settings settings, ThreadPool threadPool,
                                               ClusterService clusterService, TransportService transportService,
-                                              ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
+                                              ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver,
+                                              GatewayMetaState metaState) {
         super(settings, ACTION_NAME, threadPool, clusterService, transportService, actionFilters,
               indexNameExpressionResolver, Request::new, NodeRequest::new, ThreadPool.Names.GENERIC, NodeGatewayMetaState.class);
-    }
-
-    TransportNodesListGatewayMetaState init(GatewayMetaState metaState) {
         this.metaState = metaState;
-        return this;
     }
 
     public ActionFuture<NodesGatewayMetaState> list(String[] nodesIds, @Nullable TimeValue timeout) {
@@ -101,11 +95,6 @@ public class TransportNodesListGatewayMetaState extends TransportNodesAction<Tra
         } catch (Exception e) {
             throw new ElasticsearchException("failed to load metadata", e);
         }
-    }
-
-    @Override
-    protected boolean accumulateExceptions() {
-        return true;
     }
 
     public static class Request extends BaseNodesRequest<Request> {
@@ -188,7 +177,7 @@ public class TransportNodesListGatewayMetaState extends TransportNodesAction<Tra
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
             if (in.readBoolean()) {
-                metaData = MetaData.Builder.readFrom(in);
+                metaData = MetaData.readFrom(in);
             }
         }
 

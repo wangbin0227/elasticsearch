@@ -21,51 +21,39 @@ package org.elasticsearch.index;
 
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.TopDocs;
-import org.elasticsearch.cluster.metadata.AliasMetaData;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
-import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.translog.Translog;
-import org.elasticsearch.indices.InvalidAliasNameException;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESSingleNodeTestCase;
+import org.elasticsearch.test.InternalSettingsPlugin;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.IOException;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.elasticsearch.index.query.QueryBuilders.termQuery;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.nullValue;
+import static org.elasticsearch.test.InternalSettingsPlugin.TRANSLOG_RETENTION_CHECK_INTERVAL_SETTING;
+import static org.hamcrest.core.IsEqual.equalTo;
 
 /** Unit test(s) for IndexService */
 public class IndexServiceTests extends ESSingleNodeTestCase {
-    public void testDetermineShadowEngineShouldBeUsed() {
-        Settings regularSettings = Settings.builder()
-                .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 2)
-                .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
-                .build();
 
-        Settings shadowSettings = Settings.builder()
-                .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 2)
-                .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
-                .put(IndexMetaData.SETTING_SHADOW_REPLICAS, true)
-                .build();
-
-        assertFalse("no shadow replicas for normal settings", IndexService.useShadowEngine(true, regularSettings));
-        assertFalse("no shadow replicas for normal settings", IndexService.useShadowEngine(false, regularSettings));
-        assertFalse("no shadow replicas for primary shard with shadow settings", IndexService.useShadowEngine(true, shadowSettings));
-        assertTrue("shadow replicas for replica shards with shadow settings",IndexService.useShadowEngine(false, shadowSettings));
+    @Override
+    protected Collection<Class<? extends Plugin>> getPlugins() {
+        return Collections.singleton(InternalSettingsPlugin.class);
     }
 
     public static CompressedXContent filter(QueryBuilder filterBuilder) throws IOException {
@@ -73,82 +61,6 @@ public class IndexServiceTests extends ESSingleNodeTestCase {
         filterBuilder.toXContent(builder, ToXContent.EMPTY_PARAMS);
         builder.close();
         return new CompressedXContent(builder.string());
-    }
-
-    public void testFilteringAliases() throws Exception {
-        IndexService indexService = createIndex("test", Settings.EMPTY);
-        add(indexService, "cats", filter(termQuery("animal", "cat")));
-        add(indexService, "dogs", filter(termQuery("animal", "dog")));
-        add(indexService, "all", null);
-
-        assertThat(indexService.getMetaData().getAliases().containsKey("cats"), equalTo(true));
-        assertThat(indexService.getMetaData().getAliases().containsKey("dogs"), equalTo(true));
-        assertThat(indexService.getMetaData().getAliases().containsKey("turtles"), equalTo(false));
-
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "cats").toString(), equalTo("animal:cat"));
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "cats", "dogs").toString(), equalTo("animal:cat animal:dog"));
-
-        // Non-filtering alias should turn off all filters because filters are ORed
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "all"), nullValue());
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "cats", "all"), nullValue());
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "all", "cats"), nullValue());
-
-        add(indexService, "cats", filter(termQuery("animal", "feline")));
-        add(indexService, "dogs", filter(termQuery("animal", "canine")));
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "dogs", "cats").toString(), equalTo("animal:canine animal:feline"));
-    }
-
-    public void testAliasFilters() throws Exception {
-        IndexService indexService = createIndex("test", Settings.EMPTY);
-
-        add(indexService, "cats", filter(termQuery("animal", "cat")));
-        add(indexService, "dogs", filter(termQuery("animal", "dog")));
-
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext()), nullValue());
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "dogs").toString(), equalTo("animal:dog"));
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "dogs", "cats").toString(), equalTo("animal:dog animal:cat"));
-
-        add(indexService, "cats", filter(termQuery("animal", "feline")));
-        add(indexService, "dogs", filter(termQuery("animal", "canine")));
-
-        assertThat(indexService.aliasFilter(indexService.newQueryShardContext(), "dogs", "cats").toString(), equalTo("animal:canine animal:feline"));
-    }
-
-    public void testRemovedAliasFilter() throws Exception {
-        IndexService indexService = createIndex("test", Settings.EMPTY);
-
-        add(indexService, "cats", filter(termQuery("animal", "cat")));
-        remove(indexService, "cats");
-        try {
-            indexService.aliasFilter(indexService.newQueryShardContext(), "cats");
-            fail("Expected InvalidAliasNameException");
-        } catch (InvalidAliasNameException e) {
-            assertThat(e.getMessage(), containsString("Invalid alias name [cats]"));
-        }
-    }
-
-    public void testUnknownAliasFilter() throws Exception {
-        IndexService indexService = createIndex("test", Settings.EMPTY);
-
-        add(indexService, "cats", filter(termQuery("animal", "cat")));
-        add(indexService, "dogs", filter(termQuery("animal", "dog")));
-
-        try {
-            indexService.aliasFilter(indexService.newQueryShardContext(), "unknown");
-            fail();
-        } catch (InvalidAliasNameException e) {
-            // all is well
-        }
-    }
-
-    private void remove(IndexService service, String alias) {
-        IndexMetaData build = IndexMetaData.builder(service.getMetaData()).removeAlias(alias).build();
-        service.updateMetaData(build);
-    }
-
-    private void add(IndexService service, String alias, @Nullable CompressedXContent filter) {
-        IndexMetaData build = IndexMetaData.builder(service.getMetaData()).putAlias(AliasMetaData.builder(alias).filter(filter).build()).build();
-        service.updateMetaData(build);
     }
 
     public void testBaseAsyncTask() throws InterruptedException, IOException {
@@ -286,7 +198,7 @@ public class IndexServiceTests extends ESSingleNodeTestCase {
         // now disable
         IndexMetaData metaData = IndexMetaData.builder(indexService.getMetaData()).settings(Settings.builder().put(indexService.getMetaData().getSettings()).put(IndexSettings.INDEX_REFRESH_INTERVAL_SETTING.getKey(), -1)).build();
         indexService.updateMetaData(metaData);
-        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}").get();
+        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}", XContentType.JSON).get();
         IndexShard shard = indexService.getShard(0);
         try (Engine.Searcher searcher = shard.acquireSearcher("test")) {
             TopDocs search = searcher.searcher().search(new MatchAllDocsQuery(), 10);
@@ -313,7 +225,7 @@ public class IndexServiceTests extends ESSingleNodeTestCase {
         IndexService indexService = createIndex("test", settings);
         ensureGreen("test");
         assertTrue(indexService.getRefreshTask().mustReschedule());
-        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}").get();
+        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}", XContentType.JSON).get();
         IndexShard shard = indexService.getShard(0);
         assertBusy(() -> {
             assertFalse(shard.getTranslog().syncNeeded());
@@ -321,31 +233,63 @@ public class IndexServiceTests extends ESSingleNodeTestCase {
     }
 
     public void testRescheduleAsyncFsync() throws Exception {
+        final Settings settings = Settings.builder()
+                .put(IndexSettings.INDEX_TRANSLOG_SYNC_INTERVAL_SETTING.getKey(), "100ms")
+                .put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.REQUEST)
+            .build();
+        final IndexService indexService = createIndex("test", settings);
+        ensureGreen("test");
+        assertNull(indexService.getFsyncTask());
+
+        client()
+                .admin()
+                .indices()
+                .prepareUpdateSettings("test")
+                .setSettings(Settings.builder().put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.ASYNC))
+                .get();
+
+        assertNotNull(indexService.getFsyncTask());
+        assertTrue(indexService.getFsyncTask().mustReschedule());
+        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}", XContentType.JSON).get();
+        assertNotNull(indexService.getFsyncTask());
+        final IndexShard shard = indexService.getShard(0);
+        assertBusy(() -> assertFalse(shard.getTranslog().syncNeeded()));
+
+        client()
+                .admin()
+                .indices()
+                .prepareUpdateSettings("test")
+                .setSettings(Settings.builder().put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.REQUEST))
+                .get();
+        assertNull(indexService.getFsyncTask());
+
+        client()
+                .admin()
+                .indices()
+                .prepareUpdateSettings("test")
+                .setSettings(Settings.builder().put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.ASYNC))
+                .get();
+        assertNotNull(indexService.getFsyncTask());
+    }
+
+    public void testAsyncTranslogTrimActuallyWorks() throws Exception {
         Settings settings = Settings.builder()
-            .put(IndexSettings.INDEX_TRANSLOG_SYNC_INTERVAL_SETTING.getKey(), "100ms") // very often :)
-            .put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.REQUEST)
+            .put(TRANSLOG_RETENTION_CHECK_INTERVAL_SETTING.getKey(), "100ms") // very often :)
             .build();
         IndexService indexService = createIndex("test", settings);
         ensureGreen("test");
-        assertNull(indexService.getFsyncTask());
-        IndexMetaData metaData = IndexMetaData.builder(indexService.getMetaData()).settings(Settings.builder().put(indexService.getMetaData().getSettings()).put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.ASYNC)).build();
-        indexService.updateMetaData(metaData);
-        assertNotNull(indexService.getFsyncTask());
         assertTrue(indexService.getRefreshTask().mustReschedule());
-        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}").get();
+        client().prepareIndex("test", "test", "1").setSource("{\"foo\": \"bar\"}", XContentType.JSON).get();
+        client().admin().indices().prepareFlush("test").get();
+        IndexMetaData metaData = IndexMetaData.builder(indexService.getMetaData()).settings(Settings.builder()
+            .put(indexService.getMetaData().getSettings())
+            .put(IndexSettings.INDEX_TRANSLOG_RETENTION_SIZE_SETTING.getKey(), -1)
+            .put(IndexSettings.INDEX_TRANSLOG_RETENTION_AGE_SETTING.getKey(), -1))
+        .build();
+        indexService.updateMetaData(metaData);
+
         IndexShard shard = indexService.getShard(0);
-        assertBusy(() -> {
-            assertFalse(shard.getTranslog().syncNeeded());
-        });
-
-        metaData = IndexMetaData.builder(indexService.getMetaData()).settings(Settings.builder().put(indexService.getMetaData().getSettings()).put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.REQUEST)).build();
-        indexService.updateMetaData(metaData);
-        assertNull(indexService.getFsyncTask());
-
-        metaData = IndexMetaData.builder(indexService.getMetaData()).settings(Settings.builder().put(indexService.getMetaData().getSettings()).put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), Translog.Durability.ASYNC)).build();
-        indexService.updateMetaData(metaData);
-        assertNotNull(indexService.getFsyncTask());
-
+        assertBusy(() -> assertThat(shard.getTranslog().totalOperations(), equalTo(0)));
     }
 
     public void testIllegalFsyncInterval() {

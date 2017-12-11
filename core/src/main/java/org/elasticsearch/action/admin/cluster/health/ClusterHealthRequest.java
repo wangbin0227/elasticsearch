@@ -19,8 +19,10 @@
 
 package org.elasticsearch.action.admin.cluster.health;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.IndicesRequest;
+import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.action.support.master.MasterNodeReadRequest;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
@@ -33,16 +35,14 @@ import org.elasticsearch.common.unit.TimeValue;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
-/**
- *
- */
 public class ClusterHealthRequest extends MasterNodeReadRequest<ClusterHealthRequest> implements IndicesRequest.Replaceable {
 
     private String[] indices;
     private TimeValue timeout = new TimeValue(30, TimeUnit.SECONDS);
     private ClusterHealthStatus waitForStatus;
-    private int waitForRelocatingShards = -1;
-    private int waitForActiveShards = -1;
+    private boolean waitForNoRelocatingShards = false;
+    private boolean waitForNoInitializingShards = false;
+    private ActiveShardCount waitForActiveShards = ActiveShardCount.NONE;
     private String waitForNodes = "";
     private Priority waitForEvents = null;
 
@@ -51,6 +51,64 @@ public class ClusterHealthRequest extends MasterNodeReadRequest<ClusterHealthReq
 
     public ClusterHealthRequest(String... indices) {
         this.indices = indices;
+    }
+
+    public ClusterHealthRequest(StreamInput in) throws IOException {
+        super(in);
+        int size = in.readVInt();
+        if (size == 0) {
+            indices = Strings.EMPTY_ARRAY;
+        } else {
+            indices = new String[size];
+            for (int i = 0; i < indices.length; i++) {
+                indices[i] = in.readString();
+            }
+        }
+        timeout = new TimeValue(in);
+        if (in.readBoolean()) {
+            waitForStatus = ClusterHealthStatus.fromValue(in.readByte());
+        }
+        waitForNoRelocatingShards = in.readBoolean();
+        waitForActiveShards = ActiveShardCount.readFrom(in);
+        waitForNodes = in.readString();
+        if (in.readBoolean()) {
+            waitForEvents = Priority.readFrom(in);
+        }
+        if (in.getVersion().onOrAfter(Version.V_6_2_0)) {
+            waitForNoInitializingShards = in.readBoolean();
+        }
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        super.writeTo(out);
+        if (indices == null) {
+            out.writeVInt(0);
+        } else {
+            out.writeVInt(indices.length);
+            for (String index : indices) {
+                out.writeString(index);
+            }
+        }
+        timeout.writeTo(out);
+        if (waitForStatus == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            out.writeByte(waitForStatus.value());
+        }
+        out.writeBoolean(waitForNoRelocatingShards);
+        waitForActiveShards.writeTo(out);
+        out.writeString(waitForNodes);
+        if (waitForEvents == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            Priority.writeTo(waitForEvents, out);
+        }
+        if (out.getVersion().onOrAfter(Version.V_6_2_0)) {
+            out.writeBoolean(waitForNoInitializingShards);
+        }
     }
 
     @Override
@@ -102,22 +160,65 @@ public class ClusterHealthRequest extends MasterNodeReadRequest<ClusterHealthReq
         return waitForStatus(ClusterHealthStatus.YELLOW);
     }
 
-    public int waitForRelocatingShards() {
-        return waitForRelocatingShards;
+    public boolean waitForNoRelocatingShards() {
+        return waitForNoRelocatingShards;
     }
 
-    public ClusterHealthRequest waitForRelocatingShards(int waitForRelocatingShards) {
-        this.waitForRelocatingShards = waitForRelocatingShards;
+    /**
+     * Sets whether the request should wait for there to be no relocating shards before
+     * retrieving the cluster health status.  Defaults to {@code false}, meaning the
+     * operation does not wait on there being no more relocating shards.  Set to <code>true</code>
+     * to wait until the number of relocating shards in the cluster is 0.
+     */
+    public ClusterHealthRequest waitForNoRelocatingShards(boolean waitForNoRelocatingShards) {
+        this.waitForNoRelocatingShards = waitForNoRelocatingShards;
         return this;
     }
 
-    public int waitForActiveShards() {
+    public boolean waitForNoInitializingShards() {
+        return waitForNoInitializingShards;
+    }
+
+    /**
+     * Sets whether the request should wait for there to be no initializing shards before
+     * retrieving the cluster health status.  Defaults to {@code false}, meaning the
+     * operation does not wait on there being no more initializing shards.  Set to <code>true</code>
+     * to wait until the number of initializing shards in the cluster is 0.
+     */
+    public ClusterHealthRequest waitForNoInitializingShards(boolean waitForNoInitializingShards) {
+        this.waitForNoInitializingShards = waitForNoInitializingShards;
+        return this;
+    }
+
+    public ActiveShardCount waitForActiveShards() {
         return waitForActiveShards;
     }
 
-    public ClusterHealthRequest waitForActiveShards(int waitForActiveShards) {
-        this.waitForActiveShards = waitForActiveShards;
+    /**
+     * Sets the number of shard copies that must be active across all indices before getting the
+     * health status. Defaults to {@link ActiveShardCount#NONE}, meaning we don't wait on any active shards.
+     * Set this value to {@link ActiveShardCount#ALL} to wait for all shards (primary and
+     * all replicas) to be active across all indices in the cluster. Otherwise, use
+     * {@link ActiveShardCount#from(int)} to set this value to any non-negative integer, up to the
+     * total number of shard copies to wait for.
+     */
+    public ClusterHealthRequest waitForActiveShards(ActiveShardCount waitForActiveShards) {
+        if (waitForActiveShards.equals(ActiveShardCount.DEFAULT)) {
+            // the default for cluster health request is 0, not 1
+            this.waitForActiveShards = ActiveShardCount.NONE;
+        } else {
+            this.waitForActiveShards = waitForActiveShards;
+        }
         return this;
+    }
+
+    /**
+     * A shortcut for {@link #waitForActiveShards(ActiveShardCount)} where the numerical
+     * shard count is passed in, instead of having to first call {@link ActiveShardCount#from(int)}
+     * to get the ActiveShardCount.
+     */
+    public ClusterHealthRequest waitForActiveShards(final int waitForActiveShards) {
+        return waitForActiveShards(ActiveShardCount.from(waitForActiveShards));
     }
 
     public String waitForNodes() {
@@ -148,54 +249,6 @@ public class ClusterHealthRequest extends MasterNodeReadRequest<ClusterHealthReq
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        super.readFrom(in);
-        int size = in.readVInt();
-        if (size == 0) {
-            indices = Strings.EMPTY_ARRAY;
-        } else {
-            indices = new String[size];
-            for (int i = 0; i < indices.length; i++) {
-                indices[i] = in.readString();
-            }
-        }
-        timeout = new TimeValue(in);
-        if (in.readBoolean()) {
-            waitForStatus = ClusterHealthStatus.fromValue(in.readByte());
-        }
-        waitForRelocatingShards = in.readInt();
-        waitForActiveShards = in.readInt();
-        waitForNodes = in.readString();
-        if (in.readBoolean()) {
-            waitForEvents = Priority.readFrom(in);
-        }
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        super.writeTo(out);
-        if (indices == null) {
-            out.writeVInt(0);
-        } else {
-            out.writeVInt(indices.length);
-            for (String index : indices) {
-                out.writeString(index);
-            }
-        }
-        timeout.writeTo(out);
-        if (waitForStatus == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            out.writeByte(waitForStatus.value());
-        }
-        out.writeInt(waitForRelocatingShards);
-        out.writeInt(waitForActiveShards);
-        out.writeString(waitForNodes);
-        if (waitForEvents == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            Priority.writeTo(waitForEvents, out);
-        }
+        throw new UnsupportedOperationException("usage of Streamable is to be replaced by Writeable");
     }
 }

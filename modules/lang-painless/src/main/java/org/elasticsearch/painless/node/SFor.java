@@ -27,7 +27,10 @@ import org.elasticsearch.painless.MethodWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.Opcodes;
 
+import java.util.Arrays;
 import java.util.Set;
+
+import static java.util.Collections.emptyList;
 
 /**
  * Represents a for loop.
@@ -91,7 +94,7 @@ public final class SFor extends AStatement {
         }
 
         if (condition != null) {
-            condition.expected = Definition.BOOLEAN_TYPE;
+            condition.expected = locals.getDefinition().booleanType;
             condition.analyze(locals);
             condition = condition.cast(locals);
 
@@ -158,7 +161,7 @@ public final class SFor extends AStatement {
             AExpression initializer = (AExpression)this.initializer;
 
             initializer.write(writer, globals);
-            writer.writePop(initializer.expected.sort.size);
+            writer.writePop(initializer.expected.type.getSize());
         }
 
         writer.mark(start);
@@ -183,6 +186,8 @@ public final class SFor extends AStatement {
                 writer.writeLoopCounter(loopCounter.getSlot(), statementCount, location);
             }
 
+            block.continu = begin;
+            block.brake = end;
             block.write(writer, globals);
         } else {
             if (loopCounter != null) {
@@ -200,5 +205,10 @@ public final class SFor extends AStatement {
         }
 
         writer.mark(end);
+    }
+
+    @Override
+    public String toString() {
+        return multilineToString(emptyList(), Arrays.asList(initializer, condition, afterthought, block));
     }
 }

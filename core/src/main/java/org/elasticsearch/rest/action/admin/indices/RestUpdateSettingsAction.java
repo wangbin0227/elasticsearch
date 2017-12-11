@@ -23,36 +23,22 @@ import org.elasticsearch.action.admin.indices.settings.put.UpdateSettingsRequest
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.AcknowledgedRestListener;
 
+import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import static java.util.Collections.unmodifiableSet;
 import static org.elasticsearch.client.Requests.updateSettingsRequest;
-import static org.elasticsearch.common.util.set.Sets.newHashSet;
 
-/**
- *
- */
 public class RestUpdateSettingsAction extends BaseRestHandler {
-    private static final Set<String> VALUES_TO_EXCLUDE = unmodifiableSet(newHashSet(
-            "pretty",
-            "timeout",
-            "master_timeout",
-            "index",
-            "preserve_existing",
-            "expand_wildcards",
-            "ignore_unavailable",
-            "allow_no_indices"));
 
-    @Inject
     public RestUpdateSettingsAction(Settings settings, RestController controller) {
         super(settings);
         controller.registerHandler(RestRequest.Method.PUT, "/{index}/_settings", this);
@@ -60,35 +46,38 @@ public class RestUpdateSettingsAction extends BaseRestHandler {
     }
 
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) {
+    public String getName() {
+        return "update_settings_action";
+    }
+
+    @Override
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         UpdateSettingsRequest updateSettingsRequest = updateSettingsRequest(Strings.splitStringByCommaToArray(request.param("index")));
         updateSettingsRequest.timeout(request.paramAsTime("timeout", updateSettingsRequest.timeout()));
         updateSettingsRequest.setPreserveExisting(request.paramAsBoolean("preserve_existing", updateSettingsRequest.isPreserveExisting()));
         updateSettingsRequest.masterNodeTimeout(request.paramAsTime("master_timeout", updateSettingsRequest.masterNodeTimeout()));
         updateSettingsRequest.indicesOptions(IndicesOptions.fromRequest(request, updateSettingsRequest.indicesOptions()));
 
-        Settings.Builder updateSettings = Settings.builder();
-        String bodySettingsStr = request.content().utf8ToString();
-        if (Strings.hasText(bodySettingsStr)) {
-            Settings buildSettings = Settings.builder().loadFromSource(bodySettingsStr).build();
-            for (Map.Entry<String, String> entry : buildSettings.getAsMap().entrySet()) {
-                String key = entry.getKey();
-                String value = entry.getValue();
-                // clean up in case the body is wrapped with "settings" : { ... }
-                if (key.startsWith("settings.")) {
-                    key = key.substring("settings.".length());
-                }
-                updateSettings.put(key, value);
+        Map<String, Object> settings = new HashMap<>();
+        try (XContentParser parser = request.contentParser()) {
+            Map<String, Object> bodySettings = parser.map();
+            Object innerBodySettings = bodySettings.get("settings");
+            // clean up in case the body is wrapped with "settings" : { ... }
+            if (innerBodySettings instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> innerBodySettingsMap = (Map<String, Object>) innerBodySettings;
+                settings.putAll(innerBodySettingsMap);
+            } else {
+                settings.putAll(bodySettings);
             }
         }
-        for (Map.Entry<String, String> entry : request.params().entrySet()) {
-            if (VALUES_TO_EXCLUDE.contains(entry.getKey())) {
-                continue;
-            }
-            updateSettings.put(entry.getKey(), entry.getValue());
-        }
-        updateSettingsRequest.settings(updateSettings);
+        updateSettingsRequest.settings(settings);
 
-        client.admin().indices().updateSettings(updateSettingsRequest, new AcknowledgedRestListener<>(channel));
+        return channel -> client.admin().indices().updateSettings(updateSettingsRequest, new AcknowledgedRestListener<>(channel));
+    }
+
+    @Override
+    protected Set<String> responseParams() {
+        return Settings.FORMAT_PARAMS;
     }
 }

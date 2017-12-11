@@ -49,11 +49,16 @@ public final class EBoolean extends AExpression {
             throw createError(new IllegalArgumentException("Must read from constant [" + constant + "]."));
         }
 
-        actual = Definition.BOOLEAN_TYPE;
+        actual = locals.getDefinition().booleanType;
     }
 
     @Override
     void write(MethodWriter adapter, Globals globals) {
         throw createError(new IllegalStateException("Illegal tree structure."));
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(constant);
     }
 }

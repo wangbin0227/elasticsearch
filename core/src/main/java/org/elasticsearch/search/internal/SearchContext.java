@@ -22,12 +22,10 @@ package org.elasticsearch.search.internal;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.util.Counter;
-import org.apache.lucene.util.RefCount;
+import org.elasticsearch.action.search.SearchTask;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.ParseFieldMatcher;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.unit.TimeValue;
@@ -35,25 +33,24 @@ import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.concurrent.AbstractRefCounted;
 import org.elasticsearch.common.util.concurrent.RefCounted;
 import org.elasticsearch.common.util.iterable.Iterables;
-import org.elasticsearch.index.analysis.AnalysisService;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
-import org.elasticsearch.index.fielddata.IndexFieldDataService;
+import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.ObjectMapper;
+import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.index.query.ParsedQuery;
 import org.elasticsearch.index.query.QueryShardContext;
-import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.similarity.SimilarityService;
-import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.search.SearchExtBuilder;
 import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.aggregations.SearchContextAggregations;
 import org.elasticsearch.search.dfs.DfsSearchResult;
 import org.elasticsearch.search.fetch.FetchPhase;
 import org.elasticsearch.search.fetch.FetchSearchResult;
-import org.elasticsearch.search.fetch.FetchSubPhase;
-import org.elasticsearch.search.fetch.FetchSubPhaseContext;
+import org.elasticsearch.search.fetch.StoredFieldsContext;
+import org.elasticsearch.search.fetch.subphase.DocValueFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import org.elasticsearch.search.fetch.subphase.InnerHitsContext;
 import org.elasticsearch.search.fetch.subphase.ScriptFieldsContext;
@@ -61,12 +58,12 @@ import org.elasticsearch.search.fetch.subphase.highlight.SearchContextHighlight;
 import org.elasticsearch.search.lookup.SearchLookup;
 import org.elasticsearch.search.profile.Profilers;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rescore.RescoreSearchContext;
+import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.suggest.SuggestionSearchContext;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -84,35 +81,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 // For reference why we use RefCounted here see #20095
 public abstract class SearchContext extends AbstractRefCounted implements Releasable {
 
-    private static ThreadLocal<SearchContext> current = new ThreadLocal<>();
     public static final int DEFAULT_TERMINATE_AFTER = 0;
-
-    public static void setCurrent(SearchContext value) {
-        current.set(value);
-    }
-
-    public static void removeCurrent() {
-        current.remove();
-    }
-
-    public static SearchContext current() {
-        return current.get();
-    }
-
     private Map<Lifetime, List<Releasable>> clearables = null;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private InnerHitsContext innerHitsContext;
 
-    protected final ParseFieldMatcher parseFieldMatcher;
-
-    protected SearchContext(ParseFieldMatcher parseFieldMatcher) {
+    protected SearchContext() {
         super("search_context");
-        this.parseFieldMatcher = parseFieldMatcher;
     }
 
-    public ParseFieldMatcher parseFieldMatcher() {
-        return parseFieldMatcher;
-    }
+    public abstract void setTask(SearchTask task);
+
+    public abstract SearchTask getTask();
+
+    public abstract boolean isCancelled();
 
     @Override
     public final void close() {
@@ -120,8 +102,6 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
             decRef();
         }
     }
-
-    private boolean nowInMillisUsed;
 
     @Override
     protected final void closeInternal() {
@@ -141,10 +121,13 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     /**
      * Should be called before executing the main query and after all other parameters have been set.
+     * @param rewrite if the set query should be rewritten against the searcher returned from {@link #searcher()}
      */
-    public abstract void preProcess();
+    public abstract void preProcess(boolean rewrite);
 
-    public abstract Query searchFilter(String[] types);
+    /** Automatically apply all required filters to the given query such as
+     *  alias filters, types filters, etc. */
+    public abstract Query buildFilteredQuery(Query query);
 
     public abstract long id();
 
@@ -160,24 +143,7 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     public abstract float queryBoost();
 
-    public abstract SearchContext queryBoost(float queryBoost);
-
     public abstract long getOriginNanoTime();
-
-    public final long nowInMillis() {
-        nowInMillisUsed = true;
-        return nowInMillisImpl();
-    }
-
-    public final boolean nowInMillisUsed() {
-        return nowInMillisUsed;
-    }
-
-    public final void resetNowInMillisUsed() {
-        this.nowInMillisUsed = false;
-    }
-
-    protected abstract long nowInMillisImpl();
 
     public abstract ScrollContext scrollContext();
 
@@ -187,7 +153,9 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     public abstract SearchContext aggregations(SearchContextAggregations aggregations);
 
-    public abstract  <SubPhaseContext extends FetchSubPhaseContext> SubPhaseContext getFetchSubPhaseContext(FetchSubPhase.ContextFactory<SubPhaseContext> contextFactory);
+    public abstract void addSearchExt(SearchExtBuilder searchExtBuilder);
+
+    public abstract SearchExtBuilder getSearchExt(String name);
 
     public abstract SearchContextHighlight highlight();
 
@@ -207,9 +175,9 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
     /**
      * @return list of all rescore contexts.  empty if there aren't any.
      */
-    public abstract List<RescoreSearchContext> rescore();
+    public abstract List<RescoreContext> rescore();
 
-    public abstract void addRescore(RescoreSearchContext rescore);
+    public abstract void addRescore(RescoreContext rescore);
 
     public abstract boolean hasScriptFields();
 
@@ -226,23 +194,23 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     public abstract SearchContext fetchSourceContext(FetchSourceContext fetchSourceContext);
 
+    public abstract DocValueFieldsContext docValueFieldsContext();
+
+    public abstract SearchContext docValueFieldsContext(DocValueFieldsContext docValueFieldsContext);
+
     public abstract ContextIndexSearcher searcher();
 
     public abstract IndexShard indexShard();
 
     public abstract MapperService mapperService();
 
-    public abstract AnalysisService analysisService();
-
     public abstract SimilarityService similarityService();
-
-    public abstract ScriptService scriptService();
 
     public abstract BigArrays bigArrays();
 
     public abstract BitsetFilterCache bitsetFilterCache();
 
-    public abstract IndexFieldDataService fieldData();
+    public abstract <IFD extends IndexFieldData<?>> IFD getForField(MappedFieldType fieldType);
 
     public abstract TimeValue timeout();
 
@@ -251,6 +219,14 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
     public abstract int terminateAfter();
 
     public abstract void terminateAfter(int terminateAfter);
+
+    /**
+     * Indicates if the current index should perform frequent low level search cancellation check.
+     *
+     * Enabling low-level checks will make long running searches to react to the cancellation request faster. However,
+     * since it will produce more cancellation checks it might slow the search performance down.
+     */
+    public abstract boolean lowLevelCancellation();
 
     public abstract SearchContext minimumScore(float minimumScore);
 
@@ -264,9 +240,20 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     public abstract boolean trackScores();
 
+    public abstract SearchContext trackTotalHits(boolean trackTotalHits);
+
+    /**
+     * Indicates if the total hit count for the query should be tracked. Defaults to <tt>true</tt>
+     */
+    public abstract boolean trackTotalHits();
+
     public abstract SearchContext searchAfter(FieldDoc searchAfter);
 
     public abstract FieldDoc searchAfter();
+
+    public abstract SearchContext collapse(CollapseContext collapse);
+
+    public abstract CollapseContext collapse();
 
     public abstract SearchContext parsedPostFilter(ParsedQuery postFilter);
 
@@ -333,7 +320,9 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
 
     public abstract void keepAlive(long keepAlive);
 
-    public abstract SearchLookup lookup();
+    public SearchLookup lookup() {
+        return getQueryShardContext().lookup();
+    }
 
     public abstract DfsSearchResult dfsResult();
 
@@ -354,7 +343,7 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
      */
     public void addReleasable(Releasable releasable, Lifetime lifetime) {
         if (clearables == null) {
-            clearables = new HashMap<>();
+            clearables = new EnumMap<>(Lifetime.class);
         }
         List<Releasable> releasables = clearables.get(lifetime);
         if (releasables == null) {
@@ -427,7 +416,11 @@ public abstract class SearchContext extends AbstractRefCounted implements Releas
             result.append("searchType=[").append(searchType()).append("]");
         }
         if (scrollContext() != null) {
-            result.append("scroll=[").append(scrollContext().scroll.keepAlive()).append("]");
+            if (scrollContext().scroll != null) {
+                result.append("scroll=[").append(scrollContext().scroll.keepAlive()).append("]");
+            } else {
+                result.append("scroll=[null]");
+            }
         }
         result.append(" query=[").append(query()).append("]");
         return result.toString();

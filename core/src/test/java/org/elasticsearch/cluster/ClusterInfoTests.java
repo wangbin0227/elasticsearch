@@ -18,15 +18,12 @@
  */
 package org.elasticsearch.cluster;
 
-import org.elasticsearch.Version;
-import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.cluster.routing.UnassignedInfo;
+import org.elasticsearch.cluster.routing.ShardRoutingState;
+import org.elasticsearch.cluster.routing.TestShardRouting;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.snapshots.Snapshot;
-import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.test.ESTestCase;
 
 public class ClusterInfoTests extends ESTestCase {
@@ -49,9 +46,9 @@ public class ClusterInfoTests extends ESTestCase {
         int numEntries = randomIntBetween(0, 128);
         ImmutableOpenMap.Builder<String, DiskUsage> builder = ImmutableOpenMap.builder(numEntries);
         for (int i = 0; i < numEntries; i++) {
-            String key = randomAsciiOfLength(32);
+            String key = randomAlphaOfLength(32);
             DiskUsage diskUsage = new DiskUsage(
-                    randomAsciiOfLength(4), randomAsciiOfLength(4), randomAsciiOfLength(4),
+                    randomAlphaOfLength(4), randomAlphaOfLength(4), randomAlphaOfLength(4),
                     randomIntBetween(0, Integer.MAX_VALUE), randomIntBetween(0, Integer.MAX_VALUE)
             );
             builder.put(key, diskUsage);
@@ -63,7 +60,7 @@ public class ClusterInfoTests extends ESTestCase {
         int numEntries = randomIntBetween(0, 128);
         ImmutableOpenMap.Builder<String, Long> builder = ImmutableOpenMap.builder(numEntries);
         for (int i = 0; i < numEntries; i++) {
-            String key = randomAsciiOfLength(32);
+            String key = randomAlphaOfLength(32);
             long shardSize = randomIntBetween(0, Integer.MAX_VALUE);
             builder.put(key, shardSize);
         }
@@ -74,13 +71,9 @@ public class ClusterInfoTests extends ESTestCase {
         int numEntries = randomIntBetween(0, 128);
         ImmutableOpenMap.Builder<ShardRouting, String> builder = ImmutableOpenMap.builder(numEntries);
         for (int i = 0; i < numEntries; i++) {
-            RestoreSource restoreSource = new RestoreSource(new Snapshot(randomAsciiOfLength(4),
-                    new SnapshotId(randomAsciiOfLength(4), randomAsciiOfLength(4))), Version.CURRENT, randomAsciiOfLength(4));
-            UnassignedInfo.Reason reason = randomFrom(UnassignedInfo.Reason.values());
-            UnassignedInfo unassignedInfo = new UnassignedInfo(reason, randomAsciiOfLength(4));
-            ShardId shardId = new ShardId(randomAsciiOfLength(32), randomAsciiOfLength(32), randomIntBetween(0, Integer.MAX_VALUE));
-            ShardRouting shardRouting = ShardRouting.newUnassigned(shardId, restoreSource, randomBoolean(), unassignedInfo);
-            builder.put(shardRouting, randomAsciiOfLength(32));
+            ShardId shardId = new ShardId(randomAlphaOfLength(32), randomAlphaOfLength(32), randomIntBetween(0, Integer.MAX_VALUE));
+            ShardRouting shardRouting = TestShardRouting.newShardRouting(shardId, null, randomBoolean(), ShardRoutingState.UNASSIGNED);
+            builder.put(shardRouting, randomAlphaOfLength(32));
         }
         return builder.build();
     }

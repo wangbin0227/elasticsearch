@@ -8,12 +8,13 @@
       "parts": {
         "task_id": {
           "type": "string",
+          "required" : true,
           "description": "The task id to rethrottle"
         }
       },
       "params": {
         "requests_per_second": {
-          "type": "float",
+          "type": "number",
           "required": true,
           "description": "The throttle to set on this request in floating sub-requests per second. -1 means set no throttle."
         }

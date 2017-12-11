@@ -22,7 +22,6 @@ import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.store.IndexOutput;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.common.transport.LocalTransportAddress;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.shard.IndexShard;
@@ -37,13 +36,14 @@ import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 
 public class RecoveryStatusTests extends ESSingleNodeTestCase {
-
+    private static final org.apache.lucene.util.Version MIN_SUPPORTED_LUCENE_VERSION = org.elasticsearch.Version.CURRENT
+        .minimumIndexCompatibilityVersion().luceneVersion;
     public void testRenameTempFiles() throws IOException {
         IndexService service = createIndex("foo");
 
         IndexShard indexShard = service.getShardOrNull(0);
-        DiscoveryNode node = new DiscoveryNode("foo", new LocalTransportAddress("bar"), emptyMap(), emptySet(), Version.CURRENT);
-        RecoveryTarget status = new RecoveryTarget(indexShard, node, new RecoveryTargetService.RecoveryListener() {
+        DiscoveryNode node = new DiscoveryNode("foo", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT);
+        RecoveryTarget status = new RecoveryTarget(indexShard, node, new PeerRecoveryTargetService.RecoveryListener() {
             @Override
             public void onRecoveryDone(RecoveryState state) {
             }
@@ -52,7 +52,8 @@ public class RecoveryStatusTests extends ESSingleNodeTestCase {
             public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure) {
             }
         }, version -> {});
-        try (IndexOutput indexOutput = status.openAndPutIndexOutput("foo.bar", new StoreFileMetaData("foo.bar", 8 + CodecUtil.footerLength(), "9z51nw"), status.store())) {
+        try (IndexOutput indexOutput = status.openAndPutIndexOutput("foo.bar", new StoreFileMetaData("foo.bar", 8 + CodecUtil.footerLength()
+            , "9z51nw", MIN_SUPPORTED_LUCENE_VERSION), status.store())) {
             indexOutput.writeInt(1);
             IndexOutput openIndexOutput = status.getOpenIndexOutput("foo.bar");
             assertSame(openIndexOutput, indexOutput);
@@ -61,7 +62,8 @@ public class RecoveryStatusTests extends ESSingleNodeTestCase {
         }
 
         try {
-            status.openAndPutIndexOutput("foo.bar", new StoreFileMetaData("foo.bar", 8 + CodecUtil.footerLength(), "9z51nw"), status.store());
+            status.openAndPutIndexOutput("foo.bar", new StoreFileMetaData("foo.bar", 8 + CodecUtil.footerLength(), "9z51nw",
+                MIN_SUPPORTED_LUCENE_VERSION), status.store());
             fail("file foo.bar is already opened and registered");
         } catch (IllegalStateException ex) {
             assertEquals("output for file [foo.bar] has already been created", ex.getMessage());

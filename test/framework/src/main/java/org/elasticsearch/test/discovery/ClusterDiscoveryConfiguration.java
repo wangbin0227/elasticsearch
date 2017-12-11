@@ -25,21 +25,22 @@ import org.elasticsearch.common.network.NetworkModule;
 import org.elasticsearch.common.network.NetworkUtils;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.CollectionUtils;
-import org.elasticsearch.discovery.DiscoveryModule;
 import org.elasticsearch.env.NodeEnvironment;
+import org.elasticsearch.mocksocket.MockServerSocket;
 import org.elasticsearch.test.InternalTestCluster;
 import org.elasticsearch.test.NodeConfigurationSource;
-import org.elasticsearch.transport.TransportSettings;
+import org.elasticsearch.transport.TcpTransport;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 
 public class ClusterDiscoveryConfiguration extends NodeConfigurationSource {
 
-    static Settings DEFAULT_NODE_SETTINGS = Settings.builder().put(DiscoveryModule.DISCOVERY_TYPE_SETTING.getKey(), "zen").build();
+    static Settings DEFAULT_NODE_SETTINGS = Settings.EMPTY;
     private static final String IP_ADDR = "127.0.0.1";
 
     final int numOfNodes;
@@ -55,6 +56,11 @@ public class ClusterDiscoveryConfiguration extends NodeConfigurationSource {
     @Override
     public Settings nodeSettings(int nodeOrdinal) {
         return nodeSettings;
+    }
+
+    @Override
+    public Path nodeConfigPath(int nodeOrdinal) {
+        return null;
     }
 
     @Override
@@ -116,14 +122,14 @@ public class ClusterDiscoveryConfiguration extends NodeConfigurationSource {
                 throw new ElasticsearchException("nodeOrdinal [" + nodeOrdinal + "] is greater than the number unicast ports [" + unicastHostPorts.length + "]");
             } else {
                 // we need to pin the node port & host so we'd know where to point things
-                builder.put(TransportSettings.PORT.getKey(), unicastHostPorts[nodeOrdinal]);
-                builder.put(TransportSettings.HOST.getKey(), IP_ADDR); // only bind on one IF we use v4 here by default
+                builder.put(TcpTransport.PORT.getKey(), unicastHostPorts[nodeOrdinal]);
+                builder.put(TcpTransport.HOST.getKey(), IP_ADDR); // only bind on one IF we use v4 here by default
                 builder.put(NetworkModule.HTTP_ENABLED.getKey(), false);
                 for (int i = 0; i < unicastHostOrdinals.length; i++) {
                     unicastHosts[i] = IP_ADDR + ":" + (unicastHostPorts[unicastHostOrdinals[i]]);
                 }
             }
-            builder.putArray("discovery.zen.ping.unicast.hosts", unicastHosts);
+            builder.putList("discovery.zen.ping.unicast.hosts", unicastHosts);
             return builder.put(super.nodeSettings(nodeOrdinal)).build();
         }
 
@@ -137,7 +143,7 @@ public class ClusterDiscoveryConfiguration extends NodeConfigurationSource {
             for (int i = 0; i < unicastHostPorts.length; i++) {
                 boolean foundPortInRange = false;
                 while (tries < InternalTestCluster.PORTS_PER_JVM && !foundPortInRange) {
-                    try (ServerSocket serverSocket = new ServerSocket()) {
+                    try (ServerSocket serverSocket = new MockServerSocket()) {
                         // Set SO_REUSEADDR as we may bind here and not be able to reuse the address immediately without it.
                         serverSocket.setReuseAddress(NetworkUtils.defaultReuseAddress());
                         serverSocket.bind(new InetSocketAddress(IP_ADDR, nextPort));

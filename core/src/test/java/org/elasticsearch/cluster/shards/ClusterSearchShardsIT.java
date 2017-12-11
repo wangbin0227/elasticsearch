@@ -20,7 +20,7 @@ package org.elasticsearch.cluster.shards;
 
 import org.elasticsearch.action.admin.cluster.shards.ClusterSearchShardsGroup;
 import org.elasticsearch.action.admin.cluster.shards.ClusterSearchShardsResponse;
-import org.elasticsearch.cluster.metadata.AliasAction;
+import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest.AliasActions;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -33,11 +33,10 @@ import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_ME
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_READ;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_BLOCKS_WRITE;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_READ_ONLY;
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_READ_ONLY_ALLOW_DELETE;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertBlocked;
 import static org.hamcrest.Matchers.equalTo;
 
-/**
- */
 @ClusterScope(scope= Scope.SUITE, numDataNodes = 2)
 public class ClusterSearchShardsIT extends ESIntegTestCase {
 
@@ -58,16 +57,16 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
         ensureGreen();
         ClusterSearchShardsResponse response = client().admin().cluster().prepareSearchShards("test").execute().actionGet();
         assertThat(response.getGroups().length, equalTo(1));
-        assertThat(response.getGroups()[0].getIndex(), equalTo("test"));
-        assertThat(response.getGroups()[0].getShardId(), equalTo(0));
+        assertThat(response.getGroups()[0].getShardId().getIndexName(), equalTo("test"));
+        assertThat(response.getGroups()[0].getShardId().getId(), equalTo(0));
         assertThat(response.getGroups()[0].getShards().length, equalTo(1));
         assertThat(response.getNodes().length, equalTo(1));
         assertThat(response.getGroups()[0].getShards()[0].currentNodeId(), equalTo(response.getNodes()[0].getId()));
 
         response = client().admin().cluster().prepareSearchShards("test").setRouting("A").execute().actionGet();
         assertThat(response.getGroups().length, equalTo(1));
-        assertThat(response.getGroups()[0].getIndex(), equalTo("test"));
-        assertThat(response.getGroups()[0].getShardId(), equalTo(0));
+        assertThat(response.getGroups()[0].getShardId().getIndexName(), equalTo("test"));
+        assertThat(response.getGroups()[0].getShardId().getId(), equalTo(0));
         assertThat(response.getGroups()[0].getShards().length, equalTo(1));
         assertThat(response.getNodes().length, equalTo(1));
         assertThat(response.getGroups()[0].getShards()[0].currentNodeId(), equalTo(response.getNodes()[0].getId()));
@@ -81,7 +80,7 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
 
         ClusterSearchShardsResponse response = client().admin().cluster().prepareSearchShards("test").execute().actionGet();
         assertThat(response.getGroups().length, equalTo(4));
-        assertThat(response.getGroups()[0].getIndex(), equalTo("test"));
+        assertThat(response.getGroups()[0].getShardId().getIndexName(), equalTo("test"));
         assertThat(response.getNodes().length, equalTo(1));
         assertThat(response.getGroups()[0].getShards()[0].currentNodeId(), equalTo(response.getNodes()[0].getId()));
 
@@ -90,7 +89,7 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
 
         response = client().admin().cluster().prepareSearchShards("test").setPreference("_shards:2").execute().actionGet();
         assertThat(response.getGroups().length, equalTo(1));
-        assertThat(response.getGroups()[0].getShardId(), equalTo(2));
+        assertThat(response.getGroups()[0].getShardId().getId(), equalTo(2));
     }
 
     public void testMultipleIndicesAllocation() throws Exception {
@@ -99,9 +98,9 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
         client().admin().indices().prepareCreate("test2").setSettings(Settings.builder()
                 .put("index.number_of_shards", "4").put("index.number_of_replicas", 1)).execute().actionGet();
         client().admin().indices().prepareAliases()
-                .addAliasAction(AliasAction.newAddAliasAction("test1", "routing_alias").routing("ABC"))
-                .addAliasAction(AliasAction.newAddAliasAction("test2", "routing_alias").routing("EFG"))
-                .execute().actionGet();
+                .addAliasAction(AliasActions.add().index("test1").alias("routing_alias").routing("ABC"))
+                .addAliasAction(AliasActions.add().index("test2").alias("routing_alias").routing("EFG"))
+                .get();
         client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).setWaitForGreenStatus().execute().actionGet();
 
         ClusterSearchShardsResponse response = client().admin().cluster().prepareSearchShards("routing_alias").execute().actionGet();
@@ -111,10 +110,10 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
         boolean seenTest1 = false;
         boolean seenTest2 = false;
         for (ClusterSearchShardsGroup group : response.getGroups()) {
-            if (group.getIndex().equals("test1")) {
+            if (group.getShardId().getIndexName().equals("test1")) {
                 seenTest1 = true;
                 assertThat(group.getShards().length, equalTo(2));
-            } else if (group.getIndex().equals("test2")) {
+            } else if (group.getShardId().getIndexName().equals("test2")) {
                 seenTest2 = true;
                 assertThat(group.getShards().length, equalTo(2));
             } else {
@@ -138,7 +137,8 @@ public class ClusterSearchShardsIT extends ESIntegTestCase {
         ensureGreen("test-blocks");
 
         // Request is not blocked
-        for (String blockSetting : Arrays.asList(SETTING_BLOCKS_READ, SETTING_BLOCKS_WRITE, SETTING_READ_ONLY)) {
+        for (String blockSetting : Arrays.asList(SETTING_BLOCKS_READ, SETTING_BLOCKS_WRITE, SETTING_READ_ONLY,
+            SETTING_READ_ONLY_ALLOW_DELETE)) {
             try {
                 enableIndexBlock("test-blocks", blockSetting);
                 ClusterSearchShardsResponse response = client().admin().cluster().prepareSearchShards("test-blocks").execute().actionGet();

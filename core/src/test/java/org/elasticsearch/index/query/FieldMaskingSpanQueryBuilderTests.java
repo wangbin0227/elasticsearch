@@ -22,6 +22,7 @@ package org.elasticsearch.index.query;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.spans.FieldMaskingSpanQuery;
 import org.elasticsearch.index.mapper.MappedFieldType;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.AbstractQueryTestCase;
 
 import java.io.IOException;
@@ -36,23 +37,23 @@ public class FieldMaskingSpanQueryBuilderTests extends AbstractQueryTestCase<Fie
         if (randomBoolean()) {
             fieldName = randomFrom(MAPPED_FIELD_NAMES);
         } else {
-            fieldName = randomAsciiOfLengthBetween(1, 10);
+            fieldName = randomAlphaOfLengthBetween(1, 10);
         }
         SpanTermQueryBuilder innerQuery = new SpanTermQueryBuilderTests().createTestQueryBuilder();
         return new FieldMaskingSpanQueryBuilder(innerQuery, fieldName);
     }
 
     @Override
-    protected void doAssertLuceneQuery(FieldMaskingSpanQueryBuilder queryBuilder, Query query, QueryShardContext context) throws IOException {
+    protected void doAssertLuceneQuery(FieldMaskingSpanQueryBuilder queryBuilder, Query query, SearchContext context) throws IOException {
         String fieldInQuery = queryBuilder.fieldName();
-        MappedFieldType fieldType = context.fieldMapper(fieldInQuery);
+        MappedFieldType fieldType = context.getQueryShardContext().fieldMapper(fieldInQuery);
         if (fieldType != null) {
             fieldInQuery = fieldType.name();
         }
         assertThat(query, instanceOf(FieldMaskingSpanQuery.class));
         FieldMaskingSpanQuery fieldMaskingSpanQuery = (FieldMaskingSpanQuery) query;
         assertThat(fieldMaskingSpanQuery.getField(), equalTo(fieldInQuery));
-        assertThat(fieldMaskingSpanQuery.getMaskedQuery(), equalTo(queryBuilder.innerQuery().toQuery(context)));
+        assertThat(fieldMaskingSpanQuery.getMaskedQuery(), equalTo(queryBuilder.innerQuery().toQuery(context.getQueryShardContext())));
     }
 
     public void testIllegalArguments() {

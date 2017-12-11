@@ -19,8 +19,10 @@
 package org.elasticsearch.index.mapper;
 
 import org.apache.lucene.codecs.PostingsFormat;
-import org.apache.lucene.document.Field;
+import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.suggest.document.Completion50PostingsFormat;
 import org.apache.lucene.search.suggest.document.CompletionAnalyzer;
 import org.apache.lucene.search.suggest.document.CompletionQuery;
@@ -28,9 +30,9 @@ import org.apache.lucene.search.suggest.document.FuzzyCompletionQuery;
 import org.apache.lucene.search.suggest.document.PrefixCompletionQuery;
 import org.apache.lucene.search.suggest.document.RegexCompletionQuery;
 import org.apache.lucene.search.suggest.document.SuggestField;
-import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.ParseField;
+import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.Fuzziness;
 import org.elasticsearch.common.util.set.Sets;
@@ -38,12 +40,15 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentParser.NumberType;
 import org.elasticsearch.common.xcontent.XContentParser.Token;
+import org.elasticsearch.index.analysis.AnalyzerScope;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
+import org.elasticsearch.index.query.QueryShardContext;
 import org.elasticsearch.search.suggest.completion.CompletionSuggester;
 import org.elasticsearch.search.suggest.completion.context.ContextMapping;
 import org.elasticsearch.search.suggest.completion.context.ContextMappings;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -113,9 +118,6 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
 
         @Override
         public Mapper.Builder<?, ?> parse(String name, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
-            if (parserContext.indexVersionCreated().before(Version.V_5_0_0_alpha1)) {
-                return new CompletionFieldMapper2x.TypeParser().parse(name, node, parserContext);
-            }
             CompletionFieldMapper.Builder builder = new CompletionFieldMapper.Builder(name);
             NamedAnalyzer indexAnalyzer = null;
             NamedAnalyzer searchAnalyzer = null;
@@ -126,22 +128,22 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                 if (fieldName.equals("type")) {
                     continue;
                 }
-                if (parserContext.parseFieldMatcher().match(fieldName, Fields.ANALYZER)) {
+                if (Fields.ANALYZER.match(fieldName)) {
                     indexAnalyzer = getNamedAnalyzer(parserContext, fieldNode.toString());
                     iterator.remove();
-                } else if (parserContext.parseFieldMatcher().match(fieldName, Fields.SEARCH_ANALYZER)) {
+                } else if (Fields.SEARCH_ANALYZER.match(fieldName)) {
                     searchAnalyzer = getNamedAnalyzer(parserContext, fieldNode.toString());
                     iterator.remove();
-                } else if (parserContext.parseFieldMatcher().match(fieldName, Fields.PRESERVE_SEPARATORS)) {
+                } else if (Fields.PRESERVE_SEPARATORS.match(fieldName)) {
                     builder.preserveSeparators(Boolean.parseBoolean(fieldNode.toString()));
                     iterator.remove();
-                } else if (parserContext.parseFieldMatcher().match(fieldName, Fields.PRESERVE_POSITION_INCREMENTS)) {
+                } else if (Fields.PRESERVE_POSITION_INCREMENTS.match(fieldName)) {
                     builder.preservePositionIncrements(Boolean.parseBoolean(fieldNode.toString()));
                     iterator.remove();
-                } else if (parserContext.parseFieldMatcher().match(fieldName, Fields.MAX_INPUT_LENGTH)) {
+                } else if (Fields.MAX_INPUT_LENGTH.match(fieldName)) {
                     builder.maxInputLength(Integer.parseInt(fieldNode.toString()));
                     iterator.remove();
-                } else if (parserContext.parseFieldMatcher().match(fieldName, Fields.CONTEXTS)) {
+                } else if (Fields.CONTEXTS.match(fieldName)) {
                     builder.contextMappings(ContextMappings.load(fieldNode, parserContext.indexVersionCreated()));
                     iterator.remove();
                 } else if (parseMultiField(builder, name, parserContext, fieldName, fieldNode)) {
@@ -153,7 +155,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                 if (searchAnalyzer != null) {
                     throw new MapperParsingException("analyzer on completion field [" + name + "] must be set when search_analyzer is set");
                 }
-                indexAnalyzer = searchAnalyzer = parserContext.analysisService().analyzer("simple");
+                indexAnalyzer = searchAnalyzer = parserContext.getIndexAnalyzers().get("simple");
             } else if (searchAnalyzer == null) {
                 searchAnalyzer = indexAnalyzer;
             }
@@ -164,7 +166,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
         }
 
         private NamedAnalyzer getNamedAnalyzer(ParserContext parserContext, String name) {
-            NamedAnalyzer analyzer = parserContext.analysisService().analyzer(name);
+            NamedAnalyzer analyzer = parserContext.getIndexAnalyzers().get(name);
             if (analyzer == null) {
                 throw new IllegalArgumentException("Can't find default or mapped analyzer with name [" + name + "]");
             }
@@ -209,7 +211,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
         public NamedAnalyzer indexAnalyzer() {
             final NamedAnalyzer indexAnalyzer = super.indexAnalyzer();
             if (indexAnalyzer != null && !(indexAnalyzer.analyzer() instanceof CompletionAnalyzer)) {
-                return new NamedAnalyzer(indexAnalyzer.name(),
+                return new NamedAnalyzer(indexAnalyzer.name(), AnalyzerScope.INDEX,
                         new CompletionAnalyzer(indexAnalyzer, preserveSep, preservePositionIncrements));
 
             }
@@ -220,7 +222,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
         public NamedAnalyzer searchAnalyzer() {
             final NamedAnalyzer searchAnalyzer = super.searchAnalyzer();
             if (searchAnalyzer != null && !(searchAnalyzer.analyzer() instanceof CompletionAnalyzer)) {
-                return new NamedAnalyzer(searchAnalyzer.name(),
+                return new NamedAnalyzer(searchAnalyzer.name(), AnalyzerScope.INDEX,
                         new CompletionAnalyzer(searchAnalyzer, preserveSep, preservePositionIncrements));
             }
             return searchAnalyzer;
@@ -257,6 +259,11 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                 postingsFormat = new Completion50PostingsFormat();
             }
             return postingsFormat;
+        }
+
+        @Override
+        public Query existsQuery(QueryShardContext context) {
+            return new TermQuery(new Term(FieldNamesFieldMapper.NAME, name()));
         }
 
         /**
@@ -458,6 +465,11 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                 context.doc().add(new SuggestField(fieldType().name(), input, metaData.weight));
             }
         }
+        List<IndexableField> fields = new ArrayList<>(1);
+        createFieldNamesField(context, fields);
+        for (IndexableField field : fields) {
+            context.doc().add(field);
+        }
         multiFields.parse(this, context);
         return null;
     }
@@ -530,14 +542,10 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                                 if (currentToken == XContentParser.Token.FIELD_NAME) {
                                     fieldName = parser.currentName();
                                     contextMapping = contextMappings.get(fieldName);
-                                } else if (currentToken == XContentParser.Token.VALUE_STRING
-                                        || currentToken == XContentParser.Token.START_ARRAY
-                                        || currentToken == XContentParser.Token.START_OBJECT) {
+                                } else {
                                     assert fieldName != null;
                                     assert !contextsMap.containsKey(fieldName);
                                     contextsMap.put(fieldName, contextMapping.parseContext(parseContext, parser));
-                                } else {
-                                    throw new IllegalArgumentException("contexts must be an object or an array , but was [" + currentToken + "]");
                                 }
                             }
                         } else {
@@ -552,7 +560,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
                 }
             }
         } else {
-            throw new ElasticsearchParseException("failed to parse expected text or object got" + token.name());
+            throw new ParsingException(parser.getTokenLocation(), "failed to parse [" + parser.currentName() + "]: expected text or object, but got " + token.name());
         }
     }
 
@@ -589,7 +597,7 @@ public class CompletionFieldMapper extends FieldMapper implements ArrayValueMapp
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
         // no-op
     }
 

@@ -22,24 +22,29 @@ import org.apache.lucene.spatial.prefix.PrefixTreeStrategy;
 import org.apache.lucene.spatial.prefix.RecursivePrefixTreeStrategy;
 import org.apache.lucene.spatial.prefix.tree.GeohashPrefixTree;
 import org.apache.lucene.spatial.prefix.tree.QuadPrefixTree;
+import org.elasticsearch.common.Explicit;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.geo.GeoUtils;
 import org.elasticsearch.common.geo.builders.ShapeBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.index.mapper.DocumentMapper;
-import org.elasticsearch.index.mapper.DocumentMapperParser;
-import org.elasticsearch.index.mapper.FieldMapper;
-import org.elasticsearch.index.mapper.GeoShapeFieldMapper;
-import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESSingleNodeTestCase;
+import org.elasticsearch.test.InternalSettingsPlugin;
 
 import java.io.IOException;
+import java.util.Collection;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 
 public class GeoShapeFieldMapperTests extends ESSingleNodeTestCase {
+
+    @Override
+    protected Collection<Class<? extends Plugin>> getPlugins() {
+        return pluginList(InternalSettingsPlugin.class);
+    }
+
     public void testDefaultConfiguration() throws IOException {
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
                 .startObject("properties").startObject("location")
@@ -99,7 +104,7 @@ public class GeoShapeFieldMapperTests extends ESSingleNodeTestCase {
     }
 
     /**
-     * Test that orientation parameter correctly parses
+     * Test that coerce parameter correctly parses
      */
     public void testCoerceParsing() throws IOException {
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
@@ -130,6 +135,41 @@ public class GeoShapeFieldMapperTests extends ESSingleNodeTestCase {
 
         coerce = ((GeoShapeFieldMapper)fieldMapper).coerce().value();
         assertThat(coerce, equalTo(false));
+    }
+
+    /**
+     * Test that ignore_malformed parameter correctly parses
+     */
+    public void testIgnoreMalformedParsing() throws IOException {
+        String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
+            .startObject("properties").startObject("location")
+            .field("type", "geo_shape")
+            .field("ignore_malformed", "true")
+            .endObject().endObject()
+            .endObject().endObject().string();
+
+        DocumentMapper defaultMapper = createIndex("test").mapperService().documentMapperParser().parse("type1", new CompressedXContent(mapping));
+        FieldMapper fieldMapper = defaultMapper.mappers().getMapper("location");
+        assertThat(fieldMapper, instanceOf(GeoShapeFieldMapper.class));
+
+        Explicit<Boolean> ignoreMalformed = ((GeoShapeFieldMapper)fieldMapper).ignoreMalformed();
+        assertThat(ignoreMalformed.value(), equalTo(true));
+
+        // explicit false ignore_malformed test
+        mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
+            .startObject("properties").startObject("location")
+            .field("type", "geo_shape")
+            .field("ignore_malformed", "false")
+            .endObject().endObject()
+            .endObject().endObject().string();
+
+        defaultMapper = createIndex("test2").mapperService().documentMapperParser().parse("type1", new CompressedXContent(mapping));
+        fieldMapper = defaultMapper.mappers().getMapper("location");
+        assertThat(fieldMapper, instanceOf(GeoShapeFieldMapper.class));
+
+        ignoreMalformed = ((GeoShapeFieldMapper)fieldMapper).ignoreMalformed();
+        assertThat(ignoreMalformed.explicit(), equalTo(true));
+        assertThat(ignoreMalformed.value(), equalTo(false));
     }
 
     public void testGeohashConfiguration() throws IOException {
@@ -423,4 +463,20 @@ public class GeoShapeFieldMapperTests extends ESSingleNodeTestCase {
         assertThat(strategy.getGrid().getMaxLevels(), equalTo(GeoUtils.geoHashLevelsForPrecision(1d)));
         assertThat(geoShapeFieldMapper.fieldType().orientation(), equalTo(ShapeBuilder.Orientation.CW));
     }
+
+    public void testEmptyName() throws Exception {
+        // after 5.x
+        String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
+            .startObject("properties").startObject("")
+            .field("type", "geo_shape")
+            .endObject().endObject()
+            .endObject().endObject().string();
+        DocumentMapperParser parser = createIndex("test").mapperService().documentMapperParser();
+
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class,
+            () -> parser.parse("type1", new CompressedXContent(mapping))
+        );
+        assertThat(e.getMessage(), containsString("name cannot be empty string"));
+    }
+
 }

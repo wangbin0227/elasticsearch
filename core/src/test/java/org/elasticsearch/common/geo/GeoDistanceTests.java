@@ -18,6 +18,7 @@
  */
 package org.elasticsearch.common.geo;
 
+import org.apache.lucene.geo.Rectangle;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.unit.DistanceUnit;
@@ -38,12 +39,10 @@ public class GeoDistanceTests extends ESTestCase {
     public void testGeoDistanceSerialization() throws IOException  {
         // make sure that ordinals don't change, because we rely on then in serialization
         assertThat(GeoDistance.PLANE.ordinal(), equalTo(0));
-        assertThat(GeoDistance.FACTOR.ordinal(), equalTo(1));
-        assertThat(GeoDistance.ARC.ordinal(), equalTo(2));
-        assertThat(GeoDistance.SLOPPY_ARC.ordinal(), equalTo(3));
-        assertThat(GeoDistance.values().length, equalTo(4));
+        assertThat(GeoDistance.ARC.ordinal(), equalTo(1));
+        assertThat(GeoDistance.values().length, equalTo(2));
 
-        GeoDistance geoDistance = randomFrom(GeoDistance.PLANE, GeoDistance.FACTOR, GeoDistance.ARC, GeoDistance.SLOPPY_ARC);
+        GeoDistance geoDistance = randomFrom(GeoDistance.PLANE, GeoDistance.ARC);
         try (BytesStreamOutput out = new BytesStreamOutput()) {
             geoDistance.writeTo(out);
             try (StreamInput in = out.bytes().streamInput()) {;
@@ -70,33 +69,74 @@ public class GeoDistanceTests extends ESTestCase {
 
     public void testDistanceCheck() {
         // Note, is within is an approximation, so, even though 0.52 is outside 50mi, we still get "true"
-        GeoDistance.DistanceBoundingCheck check = GeoDistance.distanceBoundingCheck(0, 0, 50, DistanceUnit.MILES);
-        assertThat(check.isWithin(0.5, 0.5), equalTo(true));
-        assertThat(check.isWithin(0.52, 0.52), equalTo(true));
-        assertThat(check.isWithin(1, 1), equalTo(false));
+        double radius = DistanceUnit.convert(50, DistanceUnit.MILES, DistanceUnit.METERS);
+        Rectangle box = Rectangle.fromPointDistance(0, 0, radius);
+        assertThat(GeoUtils.rectangleContainsPoint(box, 0.5, 0.5), equalTo(true));
+        assertThat(GeoUtils.rectangleContainsPoint(box, 0.52, 0.52), equalTo(true));
+        assertThat(GeoUtils.rectangleContainsPoint(box, 1, 1), equalTo(false));
 
-        check = GeoDistance.distanceBoundingCheck(0, 179, 200, DistanceUnit.MILES);
-        assertThat(check.isWithin(0, -179), equalTo(true));
-        assertThat(check.isWithin(0, -178), equalTo(false));
+        radius = DistanceUnit.convert(200, DistanceUnit.MILES, DistanceUnit.METERS);
+        box = Rectangle.fromPointDistance(0, 179, radius);
+        assertThat(GeoUtils.rectangleContainsPoint(box, 0, -179), equalTo(true));
+        assertThat(GeoUtils.rectangleContainsPoint(box, 0, -178), equalTo(false));
     }
 
-    public void testArcDistanceVsPlaneInEllipsis() {
-        GeoPoint centre = new GeoPoint(48.8534100, 2.3488000);
-        GeoPoint northernPoint = new GeoPoint(48.8801108681, 2.35152032666);
-        GeoPoint westernPoint = new GeoPoint(48.85265, 2.308896);
+    private static double arcDistance(GeoPoint p1, GeoPoint p2) {
+        return GeoDistance.ARC.calculate(p1.lat(), p1.lon(), p2.lat(), p2.lon(), DistanceUnit.METERS);
+    }
 
-        // With GeoDistance.ARC both the northern and western points are within the 4km range
-        assertThat(GeoDistance.ARC.calculate(centre.lat(), centre.lon(), northernPoint.lat(),
-                northernPoint.lon(), DistanceUnit.KILOMETERS), lessThan(4D));
-        assertThat(GeoDistance.ARC.calculate(centre.lat(), centre.lon(), westernPoint.lat(),
-                westernPoint.lon(), DistanceUnit.KILOMETERS), lessThan(4D));
+    private static double planeDistance(GeoPoint p1, GeoPoint p2) {
+        return GeoDistance.PLANE.calculate(p1.lat(), p1.lon(), p2.lat(), p2.lon(), DistanceUnit.METERS);
+    }
 
-        // With GeoDistance.PLANE, only the northern point is within the 4km range,
-        // the western point is outside of the range due to the simple math it employs,
-        // meaning results will appear elliptical
-        assertThat(GeoDistance.PLANE.calculate(centre.lat(), centre.lon(), northernPoint.lat(),
-                northernPoint.lon(), DistanceUnit.KILOMETERS), lessThan(4D));
-        assertThat(GeoDistance.PLANE.calculate(centre.lat(), centre.lon(), westernPoint.lat(),
-                westernPoint.lon(), DistanceUnit.KILOMETERS), greaterThan(4D));
+    public void testArcDistanceVsPlane() {
+        // sameLongitude and sameLatitude are both 90 degrees away from basePoint along great circles
+        final GeoPoint basePoint = new GeoPoint(45, 90);
+        final GeoPoint sameLongitude = new GeoPoint(-45, 90);
+        final GeoPoint sameLatitude = new GeoPoint(45, -90);
+
+        double sameLongitudeArcDistance = arcDistance(basePoint, sameLongitude);
+        double sameLatitudeArcDistance = arcDistance(basePoint, sameLatitude);
+        double sameLongitudePlaneDistance = planeDistance(basePoint, sameLongitude);
+        double sameLatitudePlaneDistance = planeDistance(basePoint, sameLatitude);
+
+        // GeoDistance.PLANE measures the distance along a straight line in
+        // (lat, long) space so agrees with GeoDistance.ARC along a line of
+        // constant longitude but takes a longer route if there is east/west
+        // movement.
+
+        assertThat("Arc and plane should agree on sameLongitude",
+            Math.abs(sameLongitudeArcDistance - sameLongitudePlaneDistance), lessThan(0.001));
+
+        assertThat("Arc and plane should disagree on sameLatitude (by >4000km)",
+            sameLatitudePlaneDistance - sameLatitudeArcDistance, greaterThan(4.0e6));
+
+        // GeoDistance.ARC calculates the great circle distance (on a sphere) so these should agree as they're both 90 degrees
+        assertThat("Arc distances should agree", Math.abs(sameLongitudeArcDistance - sameLatitudeArcDistance), lessThan(0.001));
+    }
+
+    public void testArcDistanceVsPlaneAccuracy() {
+        // These points only differ by a few degrees so the calculation methods
+        // should match more closely. Check that the deviation is small enough,
+        // but not too small.
+
+        // The biggest deviations are away from the equator and the poles so pick a suitably troublesome latitude.
+        GeoPoint basePoint = new GeoPoint(randomDoubleBetween(30.0, 60.0, true), randomDoubleBetween(-180.0, 180.0, true));
+        GeoPoint sameLongitude = new GeoPoint(randomDoubleBetween(-90.0, 90.0, true), basePoint.lon());
+        GeoPoint sameLatitude = new GeoPoint(basePoint.lat(), basePoint.lon() + randomDoubleBetween(4.0, 10.0, true));
+
+        double sameLongitudeArcDistance = arcDistance(basePoint, sameLongitude);
+        double sameLatitudeArcDistance = arcDistance(basePoint, sameLatitude);
+        double sameLongitudePlaneDistance = planeDistance(basePoint, sameLongitude);
+        double sameLatitudePlaneDistance = planeDistance(basePoint, sameLatitude);
+
+        assertThat("Arc and plane should agree [" + basePoint + "] to [" + sameLongitude + "] (within 1cm)",
+            Math.abs(sameLongitudeArcDistance - sameLongitudePlaneDistance), lessThan(0.01));
+
+        assertThat("Arc and plane should very roughly agree [" + basePoint + "] to [" + sameLatitude + "]",
+            sameLatitudePlaneDistance - sameLatitudeArcDistance, lessThan(600.0));
+
+        assertThat("Arc and plane should disagree by some margin [" + basePoint + "] to [" + sameLatitude + "]",
+            sameLatitudePlaneDistance - sameLatitudeArcDistance, greaterThan(15.0));
     }
 }

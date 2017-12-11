@@ -19,14 +19,12 @@
 
 package org.elasticsearch.common.lucene.search.function;
 
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 
 import java.io.IOException;
 import java.util.Objects;
 
-/**
- *
- */
 public abstract class ScoreFunction {
 
     private final CombineFunction scoreCombiner;
@@ -43,7 +41,7 @@ public abstract class ScoreFunction {
 
     /**
      * Indicates if document scores are needed by this function.
-     * 
+     *
      * @return {@code true} if scores are needed.
      */
     public abstract boolean needsScores();
@@ -62,6 +60,10 @@ public abstract class ScoreFunction {
                 doEquals(other);
     }
 
+    public float getWeight() {
+        return 1.0f;
+    }
+
     /**
      * Indicates whether some other {@link ScoreFunction} object of the same type is "equal to" this one.
      */
@@ -77,4 +79,8 @@ public abstract class ScoreFunction {
     }
 
     protected abstract int doHashCode();
+
+    protected ScoreFunction rewrite(IndexReader reader) throws IOException {
+        return this;
+    }
 }

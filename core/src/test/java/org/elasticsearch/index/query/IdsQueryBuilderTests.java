@@ -20,40 +20,33 @@
 package org.elasticsearch.index.query;
 
 
-import org.apache.lucene.queries.TermsQuery;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TermInSetQuery;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.ParseFieldMatcher;
 import org.elasticsearch.common.ParsingException;
-import org.elasticsearch.common.lucene.search.MatchNoDocsQuery;
+import org.elasticsearch.index.mapper.UidFieldMapper;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.AbstractQueryTestCase;
 
 import java.io.IOException;
 
 import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.contains;
 
 public class IdsQueryBuilderTests extends AbstractQueryTestCase<IdsQueryBuilder> {
-    /**
-     * Check that parser throws exception on missing values field.
-     */
-    public void testIdsNotProvided() throws IOException {
-        String noIdsFieldQuery = "{\"ids\" : { \"type\" : \"my_type\"  }";
-        ParsingException e = expectThrows(ParsingException.class, () -> parseQuery(noIdsFieldQuery));
-        assertThat(e.getMessage(), containsString("no ids values provided"));
-    }
 
     @Override
     protected IdsQueryBuilder doCreateTestQueryBuilder() {
         String[] types;
-        if (getCurrentTypes().length > 0 && randomBoolean()) {
+        if (getCurrentTypes() != null && getCurrentTypes().length > 0 && randomBoolean()) {
             int numberOfTypes = randomIntBetween(1, getCurrentTypes().length);
             types = new String[numberOfTypes];
             for (int i = 0; i < numberOfTypes; i++) {
                 if (frequently()) {
                     types[i] = randomFrom(getCurrentTypes());
                 } else {
-                    types[i] = randomAsciiOfLengthBetween(1, 10);
+                    types[i] = randomAlphaOfLengthBetween(1, 10);
                 }
             }
         } else {
@@ -66,11 +59,11 @@ public class IdsQueryBuilderTests extends AbstractQueryTestCase<IdsQueryBuilder>
         int numberOfIds = randomIntBetween(0, 10);
         String[] ids = new String[numberOfIds];
         for (int i = 0; i < numberOfIds; i++) {
-            ids[i] = randomAsciiOfLengthBetween(1, 10);
+            ids[i] = randomAlphaOfLengthBetween(1, 10);
         }
         IdsQueryBuilder query;
         if (types.length > 0 || randomBoolean()) {
-            query = new IdsQueryBuilder(types);
+            query = new IdsQueryBuilder().types(types);
             query.addIds(ids);
         } else {
             query = new IdsQueryBuilder();
@@ -80,20 +73,20 @@ public class IdsQueryBuilderTests extends AbstractQueryTestCase<IdsQueryBuilder>
     }
 
     @Override
-    protected void doAssertLuceneQuery(IdsQueryBuilder queryBuilder, Query query, QueryShardContext context) throws IOException {
-        if (queryBuilder.ids().size() == 0) {
+    protected void doAssertLuceneQuery(IdsQueryBuilder queryBuilder, Query query, SearchContext context) throws IOException {
+        if (queryBuilder.ids().size() == 0 || context.getQueryShardContext().fieldMapper(UidFieldMapper.NAME) == null) {
             assertThat(query, instanceOf(MatchNoDocsQuery.class));
         } else {
-            assertThat(query, instanceOf(TermsQuery.class));
+            assertThat(query, instanceOf(TermInSetQuery.class));
         }
     }
 
     public void testIllegalArguments() {
-        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> new IdsQueryBuilder((String[]) null));
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> new IdsQueryBuilder().types((String[]) null));
         assertEquals("[ids] types cannot be null", e.getMessage());
 
         IdsQueryBuilder idsQueryBuilder = new IdsQueryBuilder();
-        e = expectThrows(IllegalArgumentException.class, () -> idsQueryBuilder.addIds((String[])null));
+        e = expectThrows(IllegalArgumentException.class, () -> idsQueryBuilder.addIds((String[]) null));
         assertEquals("[ids] ids cannot be null", e.getMessage());
     }
 
@@ -101,7 +94,7 @@ public class IdsQueryBuilderTests extends AbstractQueryTestCase<IdsQueryBuilder>
     public void testIdsQueryWithInvalidValues() throws Exception {
         String query = "{ \"ids\": { \"values\": [[1]] } }";
         ParsingException e = expectThrows(ParsingException.class, () -> parseQuery(query));
-        assertEquals("Illegal value for id, expecting a string or number, got: START_ARRAY", e.getMessage());
+        assertEquals("[ids] failed to parse field [values]", e.getMessage());
     }
 
     public void testFromJson() throws IOException {
@@ -115,42 +108,45 @@ public class IdsQueryBuilderTests extends AbstractQueryTestCase<IdsQueryBuilder>
                 "}";
         IdsQueryBuilder parsed = (IdsQueryBuilder) parseQuery(json);
         checkGeneratedJson(json, parsed);
-        assertEquals(json, 3, parsed.ids().size());
+        assertThat(parsed.ids(), contains("1","100","4"));
         assertEquals(json, "my_type", parsed.types()[0]);
-    }
 
-    public void testFromJsonDeprecatedSyntax() throws IOException {
-        IdsQueryBuilder tempQuery = createTestQueryBuilder();
-        assumeTrue("test requires at least one type", tempQuery.types() != null && tempQuery.types().length > 0);
-
-        String type = tempQuery.types()[0];
-        IdsQueryBuilder testQuery = new IdsQueryBuilder(type);
-
-        //single value type can also be called _type
-        final String contentString = "{\n" +
-                "    \"ids\" : {\n" +
-                "        \"_type\" : \"" + type + "\",\n" +
-                "        \"values\" : []\n" +
-                "    }\n" +
+        // check that type that is not an array and also ids that are numbers are parsed
+        json =
+                "{\n" +
+                "  \"ids\" : {\n" +
+                "    \"type\" : \"my_type\",\n" +
+                "    \"values\" : [ 1, 100, 4 ],\n" +
+                "    \"boost\" : 1.0\n" +
+                "  }\n" +
                 "}";
+        parsed = (IdsQueryBuilder) parseQuery(json);
+        assertThat(parsed.ids(), contains("1","100","4"));
+        assertEquals(json, "my_type", parsed.types()[0]);
 
-        IdsQueryBuilder parsed = (IdsQueryBuilder) parseQuery(contentString, ParseFieldMatcher.EMPTY);
-        assertEquals(testQuery, parsed);
-
-        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> parseQuery(contentString));
-        assertEquals("Deprecated field [_type] used, expected [type] instead", e.getMessage());
-
-        //array of types can also be called type rather than types
-        final String contentString2 = "{\n" +
-                "    \"ids\" : {\n" +
-                "        \"types\" : [\"" + type + "\"],\n" +
-                "        \"values\" : []\n" +
-                "    }\n" +
+        // check with empty type array
+        json =
+                "{\n" +
+                "  \"ids\" : {\n" +
+                "    \"type\" : [ ],\n" +
+                "    \"values\" : [ \"1\", \"100\", \"4\" ],\n" +
+                "    \"boost\" : 1.0\n" +
+                "  }\n" +
                 "}";
-        parsed = (IdsQueryBuilder) parseQuery(contentString, ParseFieldMatcher.EMPTY);
-        assertEquals(testQuery, parsed);
+        parsed = (IdsQueryBuilder) parseQuery(json);
+        assertThat(parsed.ids(), contains("1","100","4"));
+        assertEquals(json, 0, parsed.types().length);
 
-        e = expectThrows(IllegalArgumentException.class, () -> parseQuery(contentString2));
-        assertEquals("Deprecated field [types] used, expected [type] instead", e.getMessage());
+        // check without type
+        json =
+                "{\n" +
+                "  \"ids\" : {\n" +
+                "    \"values\" : [ \"1\", \"100\", \"4\" ],\n" +
+                "    \"boost\" : 1.0\n" +
+                "  }\n" +
+                "}";
+        parsed = (IdsQueryBuilder) parseQuery(json);
+        assertThat(parsed.ids(), contains("1","100","4"));
+        assertEquals(json, 0, parsed.types().length);
     }
 }

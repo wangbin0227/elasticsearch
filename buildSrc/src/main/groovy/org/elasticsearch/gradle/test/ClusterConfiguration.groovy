@@ -20,8 +20,6 @@ package org.elasticsearch.gradle.test
 
 import org.gradle.api.GradleException
 import org.gradle.api.Project
-import org.gradle.api.artifacts.Configuration
-import org.gradle.api.file.FileCollection
 import org.gradle.api.tasks.Input
 
 /** Configuration for an elasticsearch cluster, used for integration tests. */
@@ -47,25 +45,62 @@ class ClusterConfiguration {
     @Input
     int transportPort = 0
 
+    /**
+     * An override of the data directory. Input is the node number and output
+     * is the override data directory.
+     */
+    @Input
+    Closure<String> dataDir = null
+
+    /** Optional override of the cluster name. */
+    @Input
+    String clusterName = null
+
     @Input
     boolean daemonize = true
 
     @Input
     boolean debug = false
 
+    /**
+     * Configuration of the setting <tt>discovery.zen.minimum_master_nodes</tt> on the nodes.
+     * In case of more than one node, this defaults to the number of nodes
+     */
+    @Input
+    Closure<Integer> minimumMasterNodes = { getNumNodes() > 1 ? getNumNodes() : -1 }
+
     @Input
     String jvmArgs = "-Xms" + System.getProperty('tests.heap.size', '512m') +
-            " " + "-Xmx" + System.getProperty('tests.heap.size', '512m') +
-            " " + System.getProperty('tests.jvm.argline', '')
+        " " + "-Xmx" + System.getProperty('tests.heap.size', '512m') +
+        " " + System.getProperty('tests.jvm.argline', '')
 
     /**
-     * The seed nodes port file. In the case the cluster has more than one node we use a seed node
-     * to form the cluster. The file is null if there is no seed node yet available.
-     *
-     * Note: this can only be null if the cluster has only one node or if the first node is not yet
-     * configured. All nodes but the first node should see a non null value.
+     * Should the shared environment be cleaned on cluster startup? Defaults
+     * to {@code true} so we run with a clean cluster but some tests wish to
+     * preserve snapshots between clusters so they set this to true.
      */
-    File seedNodePortsFile
+    @Input
+    boolean cleanShared = true
+
+    /**
+     * A closure to call which returns the unicast host to connect to for cluster formation.
+     *
+     * This allows multi node clusters, or a new cluster to connect to an existing cluster.
+     * The closure takes two arguments, the NodeInfo for the first node in the cluster, and
+     * an AntBuilder which may be used to wait on conditions before returning.
+     */
+    @Input
+    Closure unicastTransportUri = { NodeInfo seedNode, NodeInfo node, AntBuilder ant ->
+        if (seedNode == node) {
+            return null
+        }
+        ant.waitfor(maxwait: '40', maxwaitunit: 'second', checkevery: '500', checkeveryunit: 'millisecond') {
+            resourceexists {
+                file(file: seedNode.transportPortsFile.toString())
+            }
+        }
+        return seedNode.transportUri()
+    }
 
     /**
      * A closure to call before the cluster is considered ready. The closure is passed the node info,
@@ -75,7 +110,13 @@ class ClusterConfiguration {
     @Input
     Closure waitCondition = { NodeInfo node, AntBuilder ant ->
         File tmpFile = new File(node.cwd, 'wait.success')
-        ant.get(src: "http://${node.httpUri()}/_cluster/health?wait_for_nodes=${numNodes}",
+        String waitUrl = "http://${node.httpUri()}/_cluster/health?wait_for_nodes=>=${numNodes}&wait_for_status=yellow"
+        ant.echo(message: "==> [${new Date()}] checking health: ${waitUrl}",
+                 level: 'info')
+        // checking here for wait_for_nodes to be >= the number of nodes because its possible
+        // this cluster is attempting to connect to nodes created by another task (same cluster name),
+        // so there will be more nodes in that case in the cluster state
+        ant.get(src: waitUrl,
                 dest: tmpFile.toString(),
                 ignoreerrors: true, // do not fail on error, so logging buffers can be flushed by the wait task
                 retries: 10)
@@ -88,7 +129,9 @@ class ClusterConfiguration {
 
     Map<String, String> systemProperties = new HashMap<>()
 
-    Map<String, String> settings = new HashMap<>()
+    Map<String, Object> settings = new HashMap<>()
+
+    Map<String, String> keystoreSettings = new HashMap<>()
 
     // map from destination path, to source file
     Map<String, Object> extraConfigFiles = new HashMap<>()
@@ -99,14 +142,21 @@ class ClusterConfiguration {
 
     LinkedHashMap<String, Object[]> setupCommands = new LinkedHashMap<>()
 
+    List<Object> dependencies = new ArrayList<>()
+
     @Input
     void systemProperty(String property, String value) {
         systemProperties.put(property, value)
     }
 
     @Input
-    void setting(String name, String value) {
+    void setting(String name, Object value) {
         settings.put(name, value)
+    }
+
+    @Input
+    void keystoreSetting(String name, String value) {
+        keystoreSettings.put(name, value)
     }
 
     @Input
@@ -138,11 +188,9 @@ class ClusterConfiguration {
         extraConfigFiles.put(path, sourceFile)
     }
 
-    /** Returns an address and port suitable for a uri to connect to this clusters seed node over transport protocol*/
-    String seedNodeTransportUri() {
-        if (seedNodePortsFile != null) {
-            return seedNodePortsFile.readLines("UTF-8").get(0)
-        }
-        return null;
+    /** Add dependencies that must be run before the first task setting up the cluster. */
+    @Input
+    void dependsOn(Object... deps) {
+        dependencies.addAll(deps)
     }
 }

@@ -26,8 +26,7 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
-import org.elasticsearch.common.transport.TransportAddressSerializers;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.node.Node;
 
@@ -35,17 +34,15 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import static org.elasticsearch.common.transport.TransportAddressSerializers.addressToStream;
 
 /**
  * A discovery node represents a node that is part of the cluster.
  */
-public class DiscoveryNode implements Writeable, ToXContent {
+public class DiscoveryNode implements Writeable, ToXContentFragment {
 
     public static boolean nodeRequiresLocalStorage(Settings settings) {
         boolean localStorageEnable = Node.NODE_LOCAL_STORAGE_SETTING.get(settings);
@@ -87,7 +84,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
      * <p>
      * <b>Note:</b> if the version of the node is unknown {@link Version#minimumCompatibilityVersion()} should be used for the current
      * version. it corresponds to the minimum version this elasticsearch version can communicate with. If a higher version is used
-     * the node might not be able to communicate with the remove node. After initial handshakes node versions will be discovered
+     * the node might not be able to communicate with the remote node. After initial handshakes node versions will be discovered
      * and updated.
      * </p>
      *
@@ -96,7 +93,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
      * @param version          the version of the node
      */
     public DiscoveryNode(final String id, TransportAddress address, Version version) {
-        this(id, address, Collections.emptyMap(), Collections.emptySet(), version);
+        this(id, address, Collections.emptyMap(), EnumSet.allOf(Role.class), version);
     }
 
     /**
@@ -104,7 +101,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
      * <p>
      * <b>Note:</b> if the version of the node is unknown {@link Version#minimumCompatibilityVersion()} should be used for the current
      * version. it corresponds to the minimum version this elasticsearch version can communicate with. If a higher version is used
-     * the node might not be able to communicate with the remove node. After initial handshakes node versions will be discovered
+     * the node might not be able to communicate with the remote node. After initial handshakes node versions will be discovered
      * and updated.
      * </p>
      *
@@ -124,7 +121,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
      * <p>
      * <b>Note:</b> if the version of the node is unknown {@link Version#minimumCompatibilityVersion()} should be used for the current
      * version. it corresponds to the minimum version this elasticsearch version can communicate with. If a higher version is used
-     * the node might not be able to communicate with the remove node. After initial handshakes node versions will be discovered
+     * the node might not be able to communicate with the remote node. After initial handshakes node versions will be discovered
      * and updated.
      * </p>
      *
@@ -137,7 +134,8 @@ public class DiscoveryNode implements Writeable, ToXContent {
      */
     public DiscoveryNode(String nodeName, String nodeId, TransportAddress address,
                          Map<String, String> attributes, Set<Role> roles, Version version) {
-        this(nodeName, nodeId, UUIDs.randomBase64UUID(), address.getHost(), address.getAddress(), address, attributes, roles, version);
+        this(nodeName, nodeId, UUIDs.randomBase64UUID(), address.address().getHostString(), address.getAddress(), address, attributes,
+            roles, version);
     }
 
     /**
@@ -145,7 +143,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
      * <p>
      * <b>Note:</b> if the version of the node is unknown {@link Version#minimumCompatibilityVersion()} should be used for the current
      * version. it corresponds to the minimum version this elasticsearch version can communicate with. If a higher version is used
-     * the node might not be able to communicate with the remove node. After initial handshakes node versions will be discovered
+     * the node might not be able to communicate with the remote node. After initial handshakes node versions will be discovered
      * and updated.
      * </p>
      *
@@ -191,19 +189,24 @@ public class DiscoveryNode implements Writeable, ToXContent {
 
     /** Creates a DiscoveryNode representing the local node. */
     public static DiscoveryNode createLocal(Settings settings, TransportAddress publishAddress, String nodeId) {
-        Map<String, String> attributes = new HashMap<>(Node.NODE_ATTRIBUTES.get(settings).getAsMap());
-        Set<DiscoveryNode.Role> roles = new HashSet<>();
+        Map<String, String> attributes = Node.NODE_ATTRIBUTES.getAsMap(settings);
+        Set<Role> roles = getRolesFromSettings(settings);
+        return new DiscoveryNode(Node.NODE_NAME_SETTING.get(settings), nodeId, publishAddress, attributes, roles, Version.CURRENT);
+    }
+
+    /** extract node roles from the given settings */
+    public static Set<Role> getRolesFromSettings(Settings settings) {
+        Set<Role> roles = EnumSet.noneOf(Role.class);
         if (Node.NODE_INGEST_SETTING.get(settings)) {
-            roles.add(DiscoveryNode.Role.INGEST);
+            roles.add(Role.INGEST);
         }
         if (Node.NODE_MASTER_SETTING.get(settings)) {
-            roles.add(DiscoveryNode.Role.MASTER);
+            roles.add(Role.MASTER);
         }
         if (Node.NODE_DATA_SETTING.get(settings)) {
-            roles.add(DiscoveryNode.Role.DATA);
+            roles.add(Role.DATA);
         }
-
-        return new DiscoveryNode(Node.NODE_NAME_SETTING.get(settings), nodeId, publishAddress,attributes, roles, Version.CURRENT);
+        return roles;
     }
 
     /**
@@ -217,7 +220,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
         this.ephemeralId = in.readString().intern();
         this.hostName = in.readString().intern();
         this.hostAddress = in.readString().intern();
-        this.address = TransportAddressSerializers.addressFromStream(in);
+        this.address = new TransportAddress(in);
         int size = in.readVInt();
         this.attributes = new HashMap<>(size);
         for (int i = 0; i < size; i++) {
@@ -226,11 +229,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
         int rolesSize = in.readVInt();
         this.roles = EnumSet.noneOf(Role.class);
         for (int i = 0; i < rolesSize; i++) {
-            int ordinal = in.readVInt();
-            if (ordinal < 0 || ordinal >= Role.values().length) {
-                throw new IOException("Unknown Role ordinal [" + ordinal + "]");
-            }
-            this.roles.add(Role.values()[ordinal]);
+            this.roles.add(in.readEnum(Role.class));
         }
         this.version = Version.readVersion(in);
     }
@@ -242,7 +241,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
         out.writeString(ephemeralId);
         out.writeString(hostName);
         out.writeString(hostAddress);
-        addressToStream(out, address);
+        address.writeTo(out);
         out.writeVInt(attributes.size());
         for (Map.Entry<String, String> entry : attributes.entrySet()) {
             out.writeString(entry.getKey());
@@ -250,7 +249,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
         }
         out.writeVInt(roles.size());
         for (Role role : roles) {
-            out.writeVInt(role.ordinal());
+            out.writeEnum(role);
         }
         Version.writeVersion(version, out);
     }
@@ -270,7 +269,7 @@ public class DiscoveryNode implements Writeable, ToXContent {
     }
 
     /**
-     * The unique ephemeral id of the node. Ephemeral ids are meant to be attached the the life span
+     * The unique ephemeral id of the node. Ephemeral ids are meant to be attached the life span
      * of a node process. When ever a node is restarted, it's ephemeral id is required to change (while it's {@link #getId()}
      * will be read from the data folder and will remain the same across restarts). Since all node attributes and addresses
      * are maintained during the life span of a node process, we can (and are) using the ephemeralId in

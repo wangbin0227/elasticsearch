@@ -56,7 +56,7 @@ public final class SIf extends AStatement {
 
     @Override
     void analyze(Locals locals) {
-        condition.expected = Definition.BOOLEAN_TYPE;
+        condition.expected = locals.getDefinition().booleanType;
         condition.analyze(locals);
         condition = condition.cast(locals);
 
@@ -93,5 +93,10 @@ public final class SIf extends AStatement {
         ifblock.write(writer, globals);
 
         writer.mark(fals);
+    }
+
+    @Override
+    public String toString() {
+        return singleLineToString(condition, ifblock);
     }
 }

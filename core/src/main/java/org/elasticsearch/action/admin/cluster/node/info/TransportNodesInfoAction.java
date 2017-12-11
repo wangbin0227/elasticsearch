@@ -29,16 +29,13 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.node.service.NodeService;
+import org.elasticsearch.node.NodeService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.List;
 
-/**
- *
- */
 public class TransportNodesInfoAction extends TransportNodesAction<NodesInfoRequest,
                                                                    NodesInfoResponse,
                                                                    TransportNodesInfoAction.NodeInfoRequest,
@@ -77,11 +74,6 @@ public class TransportNodesInfoAction extends TransportNodesAction<NodesInfoRequ
         NodesInfoRequest request = nodeRequest.request;
         return nodeService.info(request.settings(), request.os(), request.process(), request.jvm(), request.threadPool(),
                 request.transport(), request.http(), request.plugins(), request.ingest(), request.indices());
-    }
-
-    @Override
-    protected boolean accumulateExceptions() {
-        return false;
     }
 
     public static class NodeInfoRequest extends BaseNodeRequest {

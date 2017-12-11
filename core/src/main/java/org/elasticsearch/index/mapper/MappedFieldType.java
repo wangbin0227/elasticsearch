@@ -22,22 +22,25 @@ package org.elasticsearch.index.mapper;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.MultiFields;
+import org.apache.lucene.index.PrefixCodedTerms;
+import org.apache.lucene.index.PrefixCodedTerms.TermIterator;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.index.Terms;
-import org.apache.lucene.search.ConstantScoreQuery;
-import org.apache.lucene.search.MultiTermQuery;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
-import org.elasticsearch.action.fieldstats.FieldStats;
+import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.MultiTermQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.geo.ShapeRelation;
 import org.elasticsearch.common.joda.DateMathParser;
 import org.elasticsearch.common.unit.Fuzziness;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.fielddata.IndexFieldData;
+import org.elasticsearch.index.query.QueryRewriteContext;
 import org.elasticsearch.index.query.QueryShardContext;
 import org.elasticsearch.index.query.QueryShardException;
 import org.elasticsearch.index.similarity.SimilarityProvider;
@@ -95,8 +98,10 @@ public abstract class MappedFieldType extends FieldType {
      *  @throws IllegalArgumentException if the fielddata is not supported on this type.
      *  An IllegalArgumentException is needed in order to return an http error 400
      *  when this error occurs in a request. see: {@link org.elasticsearch.ExceptionsHelper#status}
-     **/
-    public IndexFieldData.Builder fielddataBuilder() {
+     *
+     * @param fullyQualifiedIndexName the name of the index this field-data is build for
+     * */
+    public IndexFieldData.Builder fielddataBuilder(String fullyQualifiedIndexName) {
         throw new IllegalArgumentException("Fielddata is not supported on field [" + name() + "] of type [" + typeName() + "]");
     }
 
@@ -133,7 +138,7 @@ public abstract class MappedFieldType extends FieldType {
             eagerGlobalOrdinals, similarity == null ? null : similarity.name(), nullValue, nullValueAsString);
     }
 
-    // norelease: we need to override freeze() and add safety checks that all settings are actually set
+    // TODO: we need to override freeze() and add safety checks that all settings are actually set
 
     /** Returns the name of this type, as would be specified in mapping properties */
     public abstract String typeName();
@@ -288,7 +293,7 @@ public abstract class MappedFieldType extends FieldType {
         return nullValue;
     }
 
-    /** Returns the null value stringified, so it can be used for e.g. _all field, or null if there is no null value */
+    /** Returns the null value stringified or null if there is no null value */
     public String nullValueAsString() {
         return nullValueAsString;
     }
@@ -303,23 +308,23 @@ public abstract class MappedFieldType extends FieldType {
     /** Given a value that comes from the stored fields API, convert it to the
      *  expected type. For instance a date field would store dates as longs and
      *  format it back to a string in this method. */
-    public Object valueForSearch(Object value) {
+    public Object valueForDisplay(Object value) {
         return value;
     }
 
     /** Returns true if the field is searchable.
      *
      */
-    protected boolean isSearchable() {
+    public boolean isSearchable() {
         return indexOptions() != IndexOptions.NONE;
     }
 
     /** Returns true if the field is aggregatable.
      *
      */
-    protected boolean isAggregatable() {
+    public boolean isAggregatable() {
         try {
-            fielddataBuilder();
+            fielddataBuilder("");
             return true;
         } catch (IllegalArgumentException e) {
             return false;
@@ -343,7 +348,15 @@ public abstract class MappedFieldType extends FieldType {
         return new ConstantScoreQuery(builder.build());
     }
 
-    public Query rangeQuery(Object lowerTerm, Object upperTerm, boolean includeLower, boolean includeUpper) {
+    /**
+     * Factory method for range queries.
+     * @param relation the relation, nulls should be interpreted like INTERSECTS
+     */
+    public Query rangeQuery(
+            Object lowerTerm, Object upperTerm,
+            boolean includeLower, boolean includeUpper,
+            ShapeRelation relation, DateTimeZone timeZone, DateMathParser parser,
+            QueryShardContext context) {
         throw new IllegalArgumentException("Field [" + name + "] of type [" + typeName() + "] does not support range queries");
     }
 
@@ -366,29 +379,13 @@ public abstract class MappedFieldType extends FieldType {
         return new ConstantScoreQuery(termQuery(nullValue, null));
     }
 
-    /**
-     * @return a {@link FieldStats} instance that maps to the type of this
-     * field or {@code null} if the provided index has no stats about the
-     * current field
-     */
-    public FieldStats stats(IndexReader reader) throws IOException {
-        int maxDoc = reader.maxDoc();
-        Terms terms = MultiFields.getTerms(reader, name());
-        if (terms == null) {
-            return null;
-        }
-        FieldStats stats = new FieldStats.Text(maxDoc, terms.getDocCount(),
-            terms.getSumDocFreq(), terms.getSumTotalTermFreq(),
-            isSearchable(), isAggregatable(),
-            terms.getMin(), terms.getMax());
-        return stats;
-    }
+    public abstract Query existsQuery(QueryShardContext context);
 
     /**
      * An enum used to describe the relation between the range of terms in a
      * shard when compared with a query range
      */
-    public static enum Relation {
+    public enum Relation {
         WITHIN,
         INTERSECTS,
         DISJOINT;
@@ -399,10 +396,10 @@ public abstract class MappedFieldType extends FieldType {
      *  {@link Relation#INTERSECTS}, which is always fine to return when there is
      *  no way to check whether values are actually within bounds. */
     public Relation isFieldWithinQuery(
-            IndexReader reader,
-            Object from, Object to,
-            boolean includeLower, boolean includeUpper,
-            DateTimeZone timeZone, DateMathParser dateMathParser) throws IOException {
+        IndexReader reader,
+        Object from, Object to,
+        boolean includeLower, boolean includeUpper,
+        DateTimeZone timeZone, DateMathParser dateMathParser, QueryRewriteContext context) throws IOException {
         return Relation.INTERSECTS;
     }
 
@@ -461,6 +458,19 @@ public abstract class MappedFieldType extends FieldType {
     public static Term extractTerm(Query termQuery) {
         while (termQuery instanceof BoostQuery) {
             termQuery = ((BoostQuery) termQuery).getQuery();
+        }
+        if (termQuery instanceof TypeFieldMapper.TypesQuery) {
+            assert ((TypeFieldMapper.TypesQuery) termQuery).getTerms().length == 1;
+            return new Term(TypeFieldMapper.NAME, ((TypeFieldMapper.TypesQuery) termQuery).getTerms()[0]);
+        }
+        if (termQuery instanceof TermInSetQuery) {
+            TermInSetQuery tisQuery = (TermInSetQuery) termQuery;
+            PrefixCodedTerms terms = tisQuery.getTermData();
+            if (terms.size() == 1) {
+                TermIterator it = terms.iterator();
+                BytesRef term = it.next();
+                return new Term(it.field(), term);
+            }
         }
         if (termQuery instanceof TermQuery == false) {
             throw new IllegalArgumentException("Cannot extract a term from a query of type "

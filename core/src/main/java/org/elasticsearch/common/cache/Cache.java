@@ -34,6 +34,8 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.ToLongBiFunction;
 
 /**
@@ -67,13 +69,13 @@ import java.util.function.ToLongBiFunction;
  */
 public class Cache<K, V> {
     // positive if entries have an expiration
-    private long expireAfterAccess = -1;
+    private long expireAfterAccessNanos = -1;
 
     // true if entries can expire after access
     private boolean entriesExpireAfterAccess;
 
     // positive if entries have an expiration after write
-    private long expireAfterWrite = -1;
+    private long expireAfterWriteNanos = -1;
 
     // true if entries can expire after initial insertion
     private boolean entriesExpireAfterWrite;
@@ -98,20 +100,30 @@ public class Cache<K, V> {
     Cache() {
     }
 
-    void setExpireAfterAccess(long expireAfterAccess) {
-        if (expireAfterAccess <= 0) {
-            throw new IllegalArgumentException("expireAfterAccess <= 0");
+    void setExpireAfterAccessNanos(long expireAfterAccessNanos) {
+        if (expireAfterAccessNanos <= 0) {
+            throw new IllegalArgumentException("expireAfterAccessNanos <= 0");
         }
-        this.expireAfterAccess = expireAfterAccess;
+        this.expireAfterAccessNanos = expireAfterAccessNanos;
         this.entriesExpireAfterAccess = true;
     }
 
-    void setExpireAfterWrite(long expireAfterWrite) {
-        if (expireAfterWrite <= 0) {
-            throw new IllegalArgumentException("expireAfterWrite <= 0");
+    // pkg-private for testing
+    long getExpireAfterAccessNanos() {
+        return this.expireAfterAccessNanos;
+    }
+
+    void setExpireAfterWriteNanos(long expireAfterWriteNanos) {
+        if (expireAfterWriteNanos <= 0) {
+            throw new IllegalArgumentException("expireAfterWriteNanos <= 0");
         }
-        this.expireAfterWrite = expireAfterWrite;
+        this.expireAfterWriteNanos = expireAfterWriteNanos;
         this.entriesExpireAfterWrite = true;
+    }
+
+    // pkg-private for testing
+    long getExpireAfterWriteNanos() {
+        return this.expireAfterWriteNanos;
     }
 
     void setMaximumWeight(long maximumWeight) {
@@ -156,7 +168,7 @@ public class Cache<K, V> {
         Entry<K, V> after;
         State state = State.NEW;
 
-        public Entry(K key, V value, long writeTime) {
+        Entry(K key, V value, long writeTime) {
             this.key = key;
             this.value = value;
             this.writeTime = this.accessTime = writeTime;
@@ -183,33 +195,40 @@ public class Cache<K, V> {
         SegmentStats segmentStats = new SegmentStats();
 
         /**
-         * get an entry from the segment
+         * get an entry from the segment; expired entries will be returned as null but not removed from the cache until the LRU list is
+         * pruned or a manual {@link Cache#refresh()} is performed however a caller can take action using the provided callback
          *
-         * @param key the key of the entry to get from the cache
-         * @param now the access time of this entry
+         * @param key       the key of the entry to get from the cache
+         * @param now       the access time of this entry
+         * @param isExpired test if the entry is expired
+         * @param onExpiration a callback if the entry associated to the key is expired
          * @return the entry if there was one, otherwise null
          */
-        Entry<K, V> get(K key, long now) {
+        Entry<K, V> get(K key, long now, Predicate<Entry<K, V>> isExpired, Consumer<Entry<K, V>> onExpiration) {
             CompletableFuture<Entry<K, V>> future;
             Entry<K, V> entry = null;
             try (ReleasableLock ignored = readLock.acquire()) {
                 future = map.get(key);
             }
             if (future != null) {
-              try {
-                  entry = future.handle((ok, ex) -> {
-                      if (ok != null) {
-                          segmentStats.hit();
-                          ok.accessTime = now;
-                          return ok;
-                      } else {
-                          segmentStats.miss();
-                          return null;
-                      }
-                  }).get();
-              } catch (ExecutionException | InterruptedException e) {
-                  throw new IllegalStateException(e);
-              }
+                try {
+                    entry = future.handle((ok, ex) -> {
+                        if (ok != null && !isExpired.test(ok)) {
+                            segmentStats.hit();
+                            ok.accessTime = now;
+                            return ok;
+                        } else {
+                            segmentStats.miss();
+                            if (ok != null) {
+                                assert isExpired.test(ok);
+                                onExpiration.accept(ok);
+                            }
+                            return null;
+                        }
+                    }).get();
+                } catch (ExecutionException | InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
             }
             else {
                 segmentStats.miss();
@@ -317,13 +336,13 @@ public class Cache<K, V> {
      * @return the value to which the specified key is mapped, or null if this map contains no mapping for the key
      */
     public V get(K key) {
-        return get(key, now());
+        return get(key, now(), e -> {});
     }
 
-    private V get(K key, long now) {
+    private V get(K key, long now, Consumer<Entry<K, V>> onExpiration) {
         CacheSegment<K, V> segment = getCacheSegment(key);
-        Entry<K, V> entry = segment.get(key, now);
-        if (entry == null || isExpired(entry, now)) {
+        Entry<K, V> entry = segment.get(key, now, e -> isExpired(e, now), onExpiration);
+        if (entry == null) {
             return null;
         } else {
             promote(entry, now);
@@ -336,15 +355,23 @@ public class Cache<K, V> {
      * value using the given mapping function and enters it into this map unless null. The load method for a given key
      * will be invoked at most once.
      *
+     * Use of different {@link CacheLoader} implementations on the same key concurrently may result in only the first
+     * loader function being called and the second will be returned the result provided by the first including any exceptions
+     * thrown during the execution of the first.
+     *
      * @param key    the key whose associated value is to be returned or computed for if non-existent
      * @param loader the function to compute a value given a key
-     * @return the current (existing or computed) value associated with the specified key, or null if the computed
-     * value is null
-     * @throws ExecutionException thrown if loader throws an exception
+     * @return the current (existing or computed) non-null value associated with the specified key
+     * @throws ExecutionException thrown if loader throws an exception or returns a null value
      */
     public V computeIfAbsent(K key, CacheLoader<K, V> loader) throws ExecutionException {
         long now = now();
-        V value = get(key, now);
+        // we have to eagerly evict expired entries or our putIfAbsent call below will fail
+        V value = get(key, now, e -> {
+            try (ReleasableLock ignored = lruLock.acquire()) {
+                evictEntry(e);
+            }
+        });
         if (value == null) {
             // we need to synchronize loading of a value for a given key; however, holding the segment lock while
             // invoking load can lead to deadlock against another thread due to dependent key loading; therefore, we
@@ -400,6 +427,11 @@ public class Cache<K, V> {
 
             try {
                 value = completableValue.get();
+                // check to ensure the future hasn't been completed with an exception
+                if (future.isCompletedExceptionally()) {
+                    future.get(); // call get to force the exception to be thrown for other concurrent callers
+                    throw new IllegalStateException("the future was completed exceptionally but no exception was thrown");
+                }
             } catch (InterruptedException e) {
                 throw new IllegalStateException(e);
             }
@@ -670,13 +702,18 @@ public class Cache<K, V> {
         assert lruLock.isHeldByCurrentThread();
 
         while (tail != null && shouldPrune(tail, now)) {
-            CacheSegment<K, V> segment = getCacheSegment(tail.key);
-            Entry<K, V> entry = tail;
-            if (segment != null) {
-                segment.remove(tail.key);
-            }
-            delete(entry, RemovalNotification.RemovalReason.EVICTED);
+            evictEntry(tail);
         }
+    }
+
+    private void evictEntry(Entry<K, V> entry) {
+        assert lruLock.isHeldByCurrentThread();
+
+        CacheSegment<K, V> segment = getCacheSegment(entry.key);
+        if (segment != null) {
+            segment.remove(entry.key);
+        }
+        delete(entry, RemovalNotification.RemovalReason.EVICTED);
     }
 
     private void delete(Entry<K, V> entry, RemovalNotification.RemovalReason removalReason) {
@@ -696,8 +733,8 @@ public class Cache<K, V> {
     }
 
     private boolean isExpired(Entry<K, V> entry, long now) {
-        return (entriesExpireAfterAccess && now - entry.accessTime > expireAfterAccess) ||
-                (entriesExpireAfterWrite && now - entry.writeTime > expireAfterWrite);
+        return (entriesExpireAfterAccess && now - entry.accessTime > expireAfterAccessNanos) ||
+                (entriesExpireAfterWrite && now - entry.writeTime > expireAfterWriteNanos);
     }
 
     private boolean unlink(Entry<K, V> entry) {

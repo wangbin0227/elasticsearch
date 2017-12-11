@@ -19,29 +19,39 @@
 
 package org.elasticsearch.script;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Streamable;
-import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
 
-public class ScriptStats implements Streamable, ToXContent {
-    private long compilations;
-    private long cacheEvictions;
+public class ScriptStats implements Writeable, ToXContentFragment {
+    private final long compilations;
+    private final long cacheEvictions;
+    private final long compilationLimitTriggered;
 
-    public ScriptStats() {
-    }
-
-    public ScriptStats(long compilations, long cacheEvictions) {
+    public ScriptStats(long compilations, long cacheEvictions, long compilationLimitTriggered) {
         this.compilations = compilations;
         this.cacheEvictions = cacheEvictions;
+        this.compilationLimitTriggered = compilationLimitTriggered;
     }
 
-    public void add(ScriptStats stats) {
-        this.compilations += stats.compilations;
-        this.cacheEvictions += stats.cacheEvictions;
+    public ScriptStats(StreamInput in) throws IOException {
+        compilations = in.readVLong();
+        cacheEvictions = in.readVLong();
+        compilationLimitTriggered = in.getVersion().onOrAfter(Version.V_7_0_0_alpha1) ? in.readVLong() : 0;
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        out.writeVLong(compilations);
+        out.writeVLong(cacheEvictions);
+        if (out.getVersion().onOrAfter(Version.V_7_0_0_alpha1)) {
+            out.writeVLong(compilationLimitTriggered);
+        }
     }
 
     public long getCompilations() {
@@ -52,16 +62,8 @@ public class ScriptStats implements Streamable, ToXContent {
         return cacheEvictions;
     }
 
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        compilations = in.readVLong();
-        cacheEvictions = in.readVLong();
-    }
-
-    @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        out.writeVLong(compilations);
-        out.writeVLong(cacheEvictions);
+    public long getCompilationLimitTriggered() {
+        return compilationLimitTriggered;
     }
 
     @Override
@@ -69,6 +71,7 @@ public class ScriptStats implements Streamable, ToXContent {
         builder.startObject(Fields.SCRIPT_STATS);
         builder.field(Fields.COMPILATIONS, getCompilations());
         builder.field(Fields.CACHE_EVICTIONS, getCacheEvictions());
+        builder.field(Fields.COMPILATION_LIMIT_TRIGGERED, getCompilationLimitTriggered());
         builder.endObject();
         return builder;
     }
@@ -77,5 +80,6 @@ public class ScriptStats implements Streamable, ToXContent {
         static final String SCRIPT_STATS = "script";
         static final String COMPILATIONS = "compilations";
         static final String CACHE_EVICTIONS = "cache_evictions";
+        static final String COMPILATION_LIMIT_TRIGGERED = "compilation_limit_triggered";
     }
 }

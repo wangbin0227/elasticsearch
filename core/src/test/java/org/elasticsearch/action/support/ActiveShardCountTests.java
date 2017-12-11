@@ -62,7 +62,7 @@ public class ActiveShardCountTests extends ESTestCase {
         assertSame(ActiveShardCount.parseString("0"), ActiveShardCount.NONE);
         int value = randomIntBetween(1, 50);
         assertEquals(ActiveShardCount.parseString(value + ""), ActiveShardCount.from(value));
-        expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.parseString(randomAsciiOfLengthBetween(4, 8)));
+        expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.parseString(randomAlphaOfLengthBetween(4, 8)));
         expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.parseString("-1")); // magic numbers not exposed through API
         expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.parseString("-2"));
         expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.parseString(randomIntBetween(-10, -3) + ""));
@@ -146,6 +146,25 @@ public class ActiveShardCountTests extends ESTestCase {
         assertTrue(waitForActiveShards.enoughShardsActive(clusterState, indexName));
     }
 
+    public void testEnoughShardsActiveValueBased() {
+        // enough shards active case
+        int threshold = randomIntBetween(1, 50);
+        ActiveShardCount waitForActiveShards = ActiveShardCount.from(randomIntBetween(0, threshold));
+        assertTrue(waitForActiveShards.enoughShardsActive(randomIntBetween(threshold, 50)));
+        // not enough shards active
+        waitForActiveShards = ActiveShardCount.from(randomIntBetween(threshold, 50));
+        assertFalse(waitForActiveShards.enoughShardsActive(randomIntBetween(0, threshold - 1)));
+        // wait for zero shards should always pass
+        assertTrue(ActiveShardCount.from(0).enoughShardsActive(randomIntBetween(0, 50)));
+        // invalid values
+        Exception e = expectThrows(IllegalStateException.class, () -> ActiveShardCount.ALL.enoughShardsActive(randomIntBetween(0, 50)));
+        assertEquals("not enough information to resolve to shard count", e.getMessage());
+        e = expectThrows(IllegalStateException.class, () -> ActiveShardCount.DEFAULT.enoughShardsActive(randomIntBetween(0, 50)));
+        assertEquals("not enough information to resolve to shard count", e.getMessage());
+        e = expectThrows(IllegalArgumentException.class, () -> ActiveShardCount.NONE.enoughShardsActive(randomIntBetween(-10, -1)));
+        assertEquals("activeShardCount cannot be negative", e.getMessage());
+    }
+
     private void runTestForOneActiveShard(final ActiveShardCount activeShardCount) {
         final String indexName = "test-idx";
         final int numberOfShards = randomIntBetween(1, 5);
@@ -181,7 +200,7 @@ public class ActiveShardCountTests extends ESTestCase {
             final IndexShardRoutingTable shardRoutingTable = shardEntry.value;
             for (ShardRouting shardRouting : shardRoutingTable.getShards()) {
                 if (shardRouting.primary()) {
-                    shardRouting = shardRouting.initialize(randomAsciiOfLength(8), null, shardRouting.getExpectedShardSize())
+                    shardRouting = shardRouting.initialize(randomAlphaOfLength(8), null, shardRouting.getExpectedShardSize())
                                        .moveToStarted();
                 }
                 newIndexRoutingTable.addShard(shardRouting);
@@ -205,7 +224,7 @@ public class ActiveShardCountTests extends ESTestCase {
                     assertTrue(shardRouting.active());
                 } else {
                     if (numToStart > 0) {
-                        shardRouting = shardRouting.initialize(randomAsciiOfLength(8), null, shardRouting.getExpectedShardSize())
+                        shardRouting = shardRouting.initialize(randomAlphaOfLength(8), null, shardRouting.getExpectedShardSize())
                                            .moveToStarted();
                         numToStart--;
                     }
@@ -231,7 +250,7 @@ public class ActiveShardCountTests extends ESTestCase {
                 } else {
                     if (shardRouting.active() == false) {
                         if (numToStart > 0) {
-                            shardRouting = shardRouting.initialize(randomAsciiOfLength(8), null, shardRouting.getExpectedShardSize())
+                            shardRouting = shardRouting.initialize(randomAlphaOfLength(8), null, shardRouting.getExpectedShardSize())
                                                .moveToStarted();
                             numToStart--;
                         }
@@ -257,7 +276,7 @@ public class ActiveShardCountTests extends ESTestCase {
                     assertTrue(shardRouting.active());
                 } else {
                     if (shardRouting.active() == false) {
-                        shardRouting = shardRouting.initialize(randomAsciiOfLength(8), null, shardRouting.getExpectedShardSize())
+                        shardRouting = shardRouting.initialize(randomAlphaOfLength(8), null, shardRouting.getExpectedShardSize())
                                            .moveToStarted();
                     }
                 }

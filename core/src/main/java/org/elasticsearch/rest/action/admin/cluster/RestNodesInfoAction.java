@@ -22,16 +22,15 @@ package org.elasticsearch.rest.action.admin.cluster;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.RestActions.NodesResponseRestListener;
 
+import java.io.IOException;
 import java.util.Set;
 
 import static org.elasticsearch.rest.RestRequest.Method.GET;
@@ -51,11 +50,10 @@ public class RestNodesInfoAction extends BaseRestHandler {
 
     private final SettingsFilter settingsFilter;
 
-    @Inject
     public RestNodesInfoAction(Settings settings, RestController controller, SettingsFilter settingsFilter) {
         super(settings);
         controller.registerHandler(GET, "/_nodes", this);
-        // this endpoint is used for metrics, not for nodeIds, like /_nodes/fs
+        // this endpoint is used for metrics, not for node IDs, like /_nodes/fs
         controller.registerHandler(GET, "/_nodes/{nodeId}", this);
         controller.registerHandler(GET, "/_nodes/{nodeId}/{metrics}", this);
         // added this endpoint to be aligned with stats
@@ -65,7 +63,12 @@ public class RestNodesInfoAction extends BaseRestHandler {
     }
 
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) {
+    public String getName() {
+        return "nodes_info_action";
+    }
+
+    @Override
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         String[] nodeIds;
         Set<String> metrics;
 
@@ -73,7 +76,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
         // still, /_nodes/_local (or any other node id) should work and be treated as usual
         // this means one must differentiate between allowed metrics and arbitrary node ids in the same place
         if (request.hasParam("nodeId") && !request.hasParam("metrics")) {
-            Set<String> metricsOrNodeIds = Strings.splitStringByCommaToSet(request.param("nodeId", "_all"));
+            Set<String> metricsOrNodeIds = Strings.tokenizeByCommaToSet(request.param("nodeId", "_all"));
             boolean isMetricsOnly = ALLOWED_METRICS.containsAll(metricsOrNodeIds);
             if (isMetricsOnly) {
                 nodeIds = new String[]{"_all"};
@@ -84,7 +87,7 @@ public class RestNodesInfoAction extends BaseRestHandler {
             }
         } else {
             nodeIds = Strings.splitStringByCommaToArray(request.param("nodeId", "_all"));
-            metrics = Strings.splitStringByCommaToSet(request.param("metrics", "_all"));
+            metrics = Strings.tokenizeByCommaToSet(request.param("metrics", "_all"));
         }
 
         final NodesInfoRequest nodesInfoRequest = new NodesInfoRequest(nodeIds);
@@ -108,7 +111,12 @@ public class RestNodesInfoAction extends BaseRestHandler {
 
         settingsFilter.addFilterSettingParams(request);
 
-        client.admin().cluster().nodesInfo(nodesInfoRequest, new NodesResponseRestListener<>(channel));
+        return channel -> client.admin().cluster().nodesInfo(nodesInfoRequest, new NodesResponseRestListener<>(channel));
+    }
+
+    @Override
+    protected Set<String> responseParams() {
+        return Settings.FORMAT_PARAMS;
     }
 
     @Override

@@ -19,7 +19,6 @@
 
 package org.elasticsearch.common.util.concurrent;
 
-
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,6 +38,10 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
      * Name used in error reporting.
      */
     private final String name;
+
+    final String getName() {
+        return name;
+    }
 
     EsThreadPoolExecutor(String name, int corePoolSize, int maximumPoolSize, long keepAliveTime, TimeUnit unit,
             BlockingQueue<Runnable> workQueue, ThreadFactory threadFactory, ThreadContext contextHolder) {
@@ -109,6 +112,27 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
         }
     }
 
+    @Override
+    protected void afterExecute(Runnable r, Throwable t) {
+        super.afterExecute(r, t);
+        assert assertDefaultContext(r);
+    }
+
+    private boolean assertDefaultContext(Runnable r) {
+        try {
+            assert contextHolder.isDefaultContext() : "the thread context is not the default context and the thread [" +
+                Thread.currentThread().getName() + "] is being returned to the pool after executing [" + r + "]";
+        } catch (IllegalStateException ex) {
+            // sometimes we execute on a closed context and isDefaultContext doen't bypass the ensureOpen checks
+            // this must not trigger an exception here since we only assert if the default is restored and
+            // we don't really care if we are closed
+            if (contextHolder.isClosed() == false) {
+                throw ex;
+            }
+        }
+        return true;
+    }
+
     /**
      * Returns a stream of all pending tasks. This is similar to {@link #getQueue()} but will expose the originally submitted
      * {@link Runnable} instances rather than potentially wrapped ones.
@@ -118,21 +142,32 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
     }
 
     @Override
-    public String toString() {
+    public final String toString() {
         StringBuilder b = new StringBuilder();
         b.append(getClass().getSimpleName()).append('[');
-        b.append(name).append(", ");
+        b.append("name = ").append(name).append(", ");
         if (getQueue() instanceof SizeBlockingQueue) {
             @SuppressWarnings("rawtypes")
             SizeBlockingQueue queue = (SizeBlockingQueue) getQueue();
             b.append("queue capacity = ").append(queue.capacity()).append(", ");
         }
+        appendThreadPoolExecutorDetails(b);
         /*
          * ThreadPoolExecutor has some nice information in its toString but we
          * can't get at it easily without just getting the toString.
          */
         b.append(super.toString()).append(']');
         return b.toString();
+    }
+
+    /**
+     * Append details about this thread pool to the specified {@link StringBuilder}. All details should be appended as key/value pairs in
+     * the form "%s = %s, "
+     *
+     * @param sb the {@link StringBuilder} to append to
+     */
+    protected void appendThreadPoolExecutorDetails(final StringBuilder sb) {
+
     }
 
     protected Runnable wrapRunnable(Runnable command) {

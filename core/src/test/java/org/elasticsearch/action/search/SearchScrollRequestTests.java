@@ -19,12 +19,25 @@
 
 package org.elasticsearch.action.search;
 
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentHelper;
+import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.search.internal.InternalScrollSearchRequest;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
+
+import static org.elasticsearch.test.EqualsHashCodeTestUtils.checkEqualsAndHashCode;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertToXContentEquivalent;
+import static org.hamcrest.Matchers.startsWith;
 
 public class SearchScrollRequestTests extends ESTestCase {
 
@@ -33,8 +46,7 @@ public class SearchScrollRequestTests extends ESTestCase {
         try (BytesStreamOutput output = new BytesStreamOutput()) {
             searchScrollRequest.writeTo(output);
             try (StreamInput in = output.bytes().streamInput()) {
-                SearchScrollRequest deserializedRequest = new SearchScrollRequest();
-                deserializedRequest.readFrom(in);
+                SearchScrollRequest deserializedRequest = new SearchScrollRequest(in);
                 assertEquals(deserializedRequest, searchScrollRequest);
                 assertEquals(deserializedRequest.hashCode(), searchScrollRequest.hashCode());
                 assertNotSame(deserializedRequest, searchScrollRequest);
@@ -48,8 +60,7 @@ public class SearchScrollRequestTests extends ESTestCase {
         try (BytesStreamOutput output = new BytesStreamOutput()) {
             internalScrollSearchRequest.writeTo(output);
             try (StreamInput in = output.bytes().streamInput()) {
-                InternalScrollSearchRequest deserializedRequest = new InternalScrollSearchRequest();
-                deserializedRequest.readFrom(in);
+                InternalScrollSearchRequest deserializedRequest = new InternalScrollSearchRequest(in);
                 assertEquals(deserializedRequest.id(), internalScrollSearchRequest.id());
                 assertEquals(deserializedRequest.scroll(), internalScrollSearchRequest.scroll());
                 assertNotSame(deserializedRequest, internalScrollSearchRequest);
@@ -57,57 +68,66 @@ public class SearchScrollRequestTests extends ESTestCase {
         }
     }
 
-    public void testEqualsAndHashcode() {
-        SearchScrollRequest firstSearchScrollRequest = createSearchScrollRequest();
-        assertNotNull("search scroll request is equal to null", firstSearchScrollRequest);
-        assertNotEquals("search scroll request  is equal to incompatible type", firstSearchScrollRequest, "");
-        assertEquals("search scroll request is not equal to self", firstSearchScrollRequest, firstSearchScrollRequest);
-        assertEquals("same source builder's hashcode returns different values if called multiple times",
-                firstSearchScrollRequest.hashCode(), firstSearchScrollRequest.hashCode());
-
-        SearchScrollRequest secondSearchScrollRequest = copyRequest(firstSearchScrollRequest);
-        assertEquals("search scroll request  is not equal to self", secondSearchScrollRequest, secondSearchScrollRequest);
-        assertEquals("search scroll request is not equal to its copy", firstSearchScrollRequest, secondSearchScrollRequest);
-        assertEquals("search scroll request is not symmetric", secondSearchScrollRequest, firstSearchScrollRequest);
-        assertEquals("search scroll request copy's hashcode is different from original hashcode",
-                firstSearchScrollRequest.hashCode(), secondSearchScrollRequest.hashCode());
-
-        SearchScrollRequest thirdSearchScrollRequest = copyRequest(secondSearchScrollRequest);
-        assertEquals("search scroll request is not equal to self", thirdSearchScrollRequest, thirdSearchScrollRequest);
-        assertEquals("search scroll request is not equal to its copy", secondSearchScrollRequest, thirdSearchScrollRequest);
-        assertEquals("search scroll request copy's hashcode is different from original hashcode",
-                secondSearchScrollRequest.hashCode(), thirdSearchScrollRequest.hashCode());
-        assertEquals("equals is not transitive", firstSearchScrollRequest, thirdSearchScrollRequest);
-        assertEquals("search scroll request copy's hashcode is different from original hashcode",
-                firstSearchScrollRequest.hashCode(), thirdSearchScrollRequest.hashCode());
-        assertEquals("equals is not symmetric", thirdSearchScrollRequest, secondSearchScrollRequest);
-        assertEquals("equals is not symmetric", thirdSearchScrollRequest, firstSearchScrollRequest);
-
-        boolean changed = false;
+    public void testFromXContent() throws Exception {
+        SearchScrollRequest searchScrollRequest = new SearchScrollRequest();
         if (randomBoolean()) {
-            secondSearchScrollRequest.scrollId(randomAsciiOfLengthBetween(3, 10));
-            if (secondSearchScrollRequest.scrollId().equals(firstSearchScrollRequest.scrollId()) == false) {
-                changed = true;
-            }
+            //test that existing values get overridden
+            searchScrollRequest = createSearchScrollRequest();
         }
-        if (randomBoolean()) {
-            secondSearchScrollRequest.scroll(randomPositiveTimeValue());
-            if (secondSearchScrollRequest.scroll().equals(firstSearchScrollRequest.scroll()) == false) {
-                changed = true;
-            }
+        try (XContentParser parser = createParser(XContentFactory.jsonBuilder()
+                .startObject()
+                .field("scroll_id", "SCROLL_ID")
+                .field("scroll", "1m")
+                .endObject())) {
+            searchScrollRequest.fromXContent(parser);
         }
-        
-        if (changed) {
-            assertNotEquals(firstSearchScrollRequest, secondSearchScrollRequest);
-            assertNotEquals(firstSearchScrollRequest.hashCode(), secondSearchScrollRequest.hashCode());
-        } else {
-            assertEquals(firstSearchScrollRequest, secondSearchScrollRequest);
-            assertEquals(firstSearchScrollRequest.hashCode(), secondSearchScrollRequest.hashCode());
+        assertEquals("SCROLL_ID", searchScrollRequest.scrollId());
+        assertEquals(TimeValue.parseTimeValue("1m", null, "scroll"), searchScrollRequest.scroll().keepAlive());
+    }
+
+    public void testFromXContentWithUnknownParamThrowsException() throws Exception {
+        SearchScrollRequest searchScrollRequest = new SearchScrollRequest();
+        XContentParser invalidContent = createParser(XContentFactory.jsonBuilder()
+                .startObject()
+                .field("scroll_id", "value_2")
+                .field("unknown", "keyword")
+                .endObject());
+
+        Exception e = expectThrows(IllegalArgumentException.class,
+                () -> searchScrollRequest.fromXContent(invalidContent));
+        assertThat(e.getMessage(), startsWith("Unknown parameter [unknown]"));
+    }
+
+    public void testToXContent() throws IOException {
+        SearchScrollRequest searchScrollRequest = new SearchScrollRequest();
+        searchScrollRequest.scrollId("SCROLL_ID");
+        searchScrollRequest.scroll("1m");
+        try (XContentBuilder builder = JsonXContent.contentBuilder()) {
+            searchScrollRequest.toXContent(builder, ToXContent.EMPTY_PARAMS);
+            assertEquals("{\"scroll_id\":\"SCROLL_ID\",\"scroll\":\"1m\"}", builder.string());
         }
     }
-    
+
+    public void testToAndFromXContent() throws IOException {
+        XContentType xContentType = randomFrom(XContentType.values());
+        boolean humanReadable = randomBoolean();
+        SearchScrollRequest originalRequest = createSearchScrollRequest();
+        BytesReference originalBytes = toShuffledXContent(originalRequest, xContentType, ToXContent.EMPTY_PARAMS, humanReadable);
+        SearchScrollRequest parsedRequest = new SearchScrollRequest();
+        try (XContentParser parser = createParser(xContentType.xContent(), originalBytes)) {
+            parsedRequest.fromXContent(parser);
+        }
+        assertEquals(originalRequest, parsedRequest);
+        BytesReference parsedBytes = XContentHelper.toXContent(parsedRequest, xContentType, humanReadable);
+        assertToXContentEquivalent(originalBytes, parsedBytes, xContentType);
+    }
+
+    public void testEqualsAndHashcode() {
+        checkEqualsAndHashCode(createSearchScrollRequest(), SearchScrollRequestTests::copyRequest, SearchScrollRequestTests::mutate);
+    }
+
     public static SearchScrollRequest createSearchScrollRequest() {
-        SearchScrollRequest searchScrollRequest = new SearchScrollRequest(randomAsciiOfLengthBetween(3, 10));
+        SearchScrollRequest searchScrollRequest = new SearchScrollRequest(randomAlphaOfLengthBetween(3, 10));
         searchScrollRequest.scroll(randomPositiveTimeValue());
         return searchScrollRequest;
     }
@@ -117,5 +137,14 @@ public class SearchScrollRequestTests extends ESTestCase {
         result.scrollId(searchScrollRequest.scrollId());
         result.scroll(searchScrollRequest.scroll());
         return result;
+    }
+
+    private static SearchScrollRequest mutate(SearchScrollRequest original) {
+        SearchScrollRequest copy = copyRequest(original);
+        if (randomBoolean()) {
+            return copy.scrollId(original.scrollId() + "xyz");
+        } else {
+            return copy.scroll(new TimeValue(original.scroll().keepAlive().getMillis() + 1));
+        }
     }
 }

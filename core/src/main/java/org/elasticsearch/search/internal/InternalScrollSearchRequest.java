@@ -20,9 +20,12 @@
 package org.elasticsearch.search.internal;
 
 import org.elasticsearch.action.search.SearchScrollRequest;
+import org.elasticsearch.action.search.SearchTask;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.Scroll;
+import org.elasticsearch.tasks.Task;
+import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.transport.TransportRequest;
 
 import java.io.IOException;
@@ -41,6 +44,19 @@ public class InternalScrollSearchRequest extends TransportRequest {
         this.scroll = request.scroll();
     }
 
+    public InternalScrollSearchRequest(StreamInput in) throws IOException {
+        super(in);
+        id = in.readLong();
+        scroll = in.readOptionalWriteable(Scroll::new);
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        super.writeTo(out);
+        out.writeLong(id);
+        out.writeOptionalWriteable(scroll);
+    }
+
     public long id() {
         return id;
     }
@@ -56,15 +72,17 @@ public class InternalScrollSearchRequest extends TransportRequest {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        super.readFrom(in);
-        id = in.readLong();
-        scroll = in.readOptionalWriteable(Scroll::new);
+        throw new UnsupportedOperationException("usage of Streamable is to be replaced by Writeable");
     }
 
     @Override
-    public void writeTo(StreamOutput out) throws IOException {
-        super.writeTo(out);
-        out.writeLong(id);
-        out.writeOptionalWriteable(scroll);
+    public Task createTask(long id, String type, String action, TaskId parentTaskId) {
+        return new SearchTask(id, type, action, getDescription(), parentTaskId);
     }
+
+    @Override
+    public String getDescription() {
+        return "id[" + id + "], scroll[" + scroll + "]";
+    }
+
 }

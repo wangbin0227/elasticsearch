@@ -19,9 +19,14 @@
 
 package org.elasticsearch.gradle.doc
 
+import groovy.json.JsonException
+import groovy.json.JsonParserType
+import groovy.json.JsonSlurper
+
 import org.gradle.api.DefaultTask
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.file.ConfigurableFileTree
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.TaskAction
 
@@ -38,6 +43,7 @@ public class SnippetsTask extends DefaultTask {
     private static final String SKIP = /skip:([^\]]+)/
     private static final String SETUP = /setup:([^ \]]+)/
     private static final String WARNING = /warning:(.+)/
+    private static final String CAT = /(_cat)/
     private static final String TEST_SYNTAX =
         /(?:$CATCH|$SUBSTITUTION|$SKIP|(continued)|$SETUP|$WARNING) ?/
 
@@ -60,6 +66,12 @@ public class SnippetsTask extends DefaultTask {
         exclude 'build'
     }
 
+    /**
+     * Substitutions done on every snippet's contents.
+     */
+    @Input
+    Map<String, String> defaultSubstitutions = [:]
+
     @TaskAction
     public void executeTask() {
         /*
@@ -75,20 +87,56 @@ public class SnippetsTask extends DefaultTask {
             Closure emit = {
                 snippet.contents = contents.toString()
                 contents = null
+                Closure doSubstitution = { String pattern, String subst ->
+                    /*
+                     * $body is really common but it looks like a
+                     * backreference so we just escape it here to make the
+                     * tests cleaner.
+                     */
+                    subst = subst.replace('$body', '\\$body')
+                    subst = subst.replace('$_path', '\\$_path')
+                    // \n is a new line....
+                    subst = subst.replace('\\n', '\n')
+                    snippet.contents = snippet.contents.replaceAll(
+                        pattern, subst)
+                }
+                defaultSubstitutions.each doSubstitution
                 if (substitutions != null) {
-                    substitutions.each { String pattern, String subst ->
-                        /*
-                         * $body is really common but it looks like a
-                         * backreference so we just escape it here to make the
-                         * tests cleaner.
-                         */
-                        subst = subst.replace('$body', '\\$body')
-                        // \n is a new line....
-                        subst = subst.replace('\\n', '\n')
-                        snippet.contents = snippet.contents.replaceAll(
-                            pattern, subst)
-                    }
+                    substitutions.each doSubstitution
                     substitutions = null
+                }
+                if (snippet.language == null) {
+                    throw new InvalidUserDataException("$snippet: "
+                        + "Snippet missing a language. This is required by "
+                        + "Elasticsearch's doc testing infrastructure so we "
+                        + "be sure we don't accidentally forget to test a "
+                        + "snippet.")
+                }
+                // Try to detect snippets that contain `curl`
+                if (snippet.language == 'sh' || snippet.language == 'shell') {
+                    snippet.curl = snippet.contents.contains('curl')
+                    if (snippet.console == false && snippet.curl == false) {
+                        throw new InvalidUserDataException("$snippet: "
+                            + "No need for NOTCONSOLE if snippet doesn't "
+                            + "contain `curl`.")
+                    }
+                }
+                if (snippet.testResponse && snippet.language == 'js') {
+                    String quoted = snippet.contents
+                        // quote values starting with $
+                        .replaceAll(/([:,])\s*(\$[^ ,\n}]+)/, '$1 "$2"')
+                        // quote fields starting with $
+                        .replaceAll(/(\$[^ ,\n}]+)\s*:/, '"$1":')
+                    JsonSlurper slurper =
+                        new JsonSlurper(type: JsonParserType.INDEX_OVERLAY)
+                    try {
+                        slurper.parseText(quoted)
+                    } catch (JsonException e) {
+                        throw new InvalidUserDataException("Invalid json "
+                            + "in $snippet. The error is:\n${e.message}.\n"
+                            + "After substitutions and munging, the json "
+                            + "looks like:\n$quoted", e)
+                    }
                 }
                 perSnippet(snippet)
                 snippet = null
@@ -107,7 +155,7 @@ public class SnippetsTask extends DefaultTask {
                     }
                     return
                 }
-                matcher = line =~ /\[source,(\w+)]\s*/
+                matcher = line =~ /\["?source"?,\s*"?(\w+)"?(,.*)?].*/
                 if (matcher.matches()) {
                     lastLanguage = matcher.group(1)
                     lastLanguageLine = lineNumber
@@ -196,8 +244,17 @@ public class SnippetsTask extends DefaultTask {
                             substitutions = []
                         }
                         String loc = "$file:$lineNumber"
-                        parse(loc, matcher.group(2), /$SUBSTITUTION ?/) {
-                            substitutions.add([it.group(1), it.group(2)])
+                        parse(loc, matcher.group(2), /(?:$SUBSTITUTION|$CAT) ?/) {
+                            if (it.group(1) != null) {
+                                // TESTRESPONSE[s/adsf/jkl/]
+                                substitutions.add([it.group(1), it.group(2)])
+                            } else if (it.group(3) != null) {
+                                // TESTRESPONSE[_cat]
+                                substitutions.add(['^', '/'])
+                                substitutions.add(['\n$', '\\\\s*/'])
+                                substitutions.add(['( +)', '$1\\\\s+'])
+                                substitutions.add(['\n', '\\\\s*\n '])
+                            }
                         }
                     }
                     return
@@ -250,6 +307,7 @@ public class SnippetsTask extends DefaultTask {
         String language = null
         String catchPart = null
         String setup = null
+        boolean curl
         List warnings = new ArrayList()
 
         @Override
@@ -284,6 +342,9 @@ public class SnippetsTask extends DefaultTask {
             }
             if (testSetup) {
                 result += '// TESTSETUP'
+            }
+            if (curl) {
+                result += '(curl)'
             }
             return result
         }

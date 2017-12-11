@@ -19,48 +19,52 @@
 
 package org.elasticsearch.plugin.discovery.azure.classic;
 
-import org.elasticsearch.cloud.azure.classic.AzureDiscoveryModule;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.cloud.azure.classic.management.AzureComputeService;
-import org.elasticsearch.common.inject.Module;
+import org.elasticsearch.cloud.azure.classic.management.AzureComputeServiceImpl;
 import org.elasticsearch.common.logging.DeprecationLogger;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.DiscoveryModule;
 import org.elasticsearch.discovery.azure.classic.AzureUnicastHostsProvider;
-import org.elasticsearch.discovery.zen.ZenDiscovery;
+import org.elasticsearch.discovery.zen.UnicastHostsProvider;
+import org.elasticsearch.plugins.DiscoveryPlugin;
 import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.transport.TransportService;
 
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
 
-public class AzureDiscoveryPlugin extends Plugin {
+public class AzureDiscoveryPlugin extends Plugin implements DiscoveryPlugin {
 
     public static final String AZURE = "azure";
-    private final Settings settings;
-    protected final ESLogger logger = Loggers.getLogger(AzureDiscoveryPlugin.class);
+    protected final Settings settings;
+    private static final Logger logger = Loggers.getLogger(AzureDiscoveryPlugin.class);
+    private static final DeprecationLogger deprecationLogger = new DeprecationLogger(logger);
 
     public AzureDiscoveryPlugin(Settings settings) {
         this.settings = settings;
-        DeprecationLogger deprecationLogger = new DeprecationLogger(logger);
         deprecationLogger.deprecated("azure classic discovery plugin is deprecated. Use azure arm discovery plugin instead");
         logger.trace("starting azure classic discovery plugin...");
     }
 
-    @Override
-    public Collection<Module> createGuiceModules() {
-        return Collections.singletonList((Module) new AzureDiscoveryModule(settings));
+    // overrideable for tests
+    protected AzureComputeService createComputeService() {
+        return new AzureComputeServiceImpl(settings);
     }
 
-    public void onModule(DiscoveryModule discoveryModule) {
-        if (AzureDiscoveryModule.isDiscoveryReady(settings, logger)) {
-            discoveryModule.addDiscoveryType(AZURE, ZenDiscovery.class);
-            discoveryModule.addUnicastHostProvider(AZURE, AzureUnicastHostsProvider.class);
-        }
+    @Override
+    public Map<String, Supplier<UnicastHostsProvider>> getZenHostsProviders(TransportService transportService,
+                                                                            NetworkService networkService) {
+        return Collections.singletonMap(AZURE,
+            () -> new AzureUnicastHostsProvider(settings, createComputeService(), transportService, networkService));
     }
+
+
 
     @Override
     public List<Setting<?>> getSettings() {
@@ -75,5 +79,6 @@ public class AzureDiscoveryPlugin extends Plugin {
                             AzureComputeService.Discovery.DEPLOYMENT_SLOT_SETTING,
                             AzureComputeService.Discovery.ENDPOINT_NAME_SETTING);
     }
+
 
 }

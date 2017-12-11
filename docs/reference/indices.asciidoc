@@ -16,6 +16,7 @@ index settings, aliases, mappings, and index templates.
 * <<indices-exists>>
 * <<indices-open-close>>
 * <<indices-shrink-index>>
+* <<indices-split-index>>
 * <<indices-rollover-index>>
 
 [float]
@@ -41,11 +42,6 @@ index settings, aliases, mappings, and index templates.
 * <<indices-templates>>
 
 [float]
-[[shadow-replicas]]
-== Replica configurations
-* <<indices-shadow-replicas>>
-
-[float]
 [[monitoring]]
 == Monitoring:
 * <<indices-stats>>
@@ -60,7 +56,6 @@ index settings, aliases, mappings, and index templates.
 * <<indices-refresh>>
 * <<indices-flush>>
 * <<indices-forcemerge>>
-* <<indices-upgrade>>
 
 --
 
@@ -75,6 +70,8 @@ include::indices/indices-exists.asciidoc[]
 include::indices/open-close.asciidoc[]
 
 include::indices/shrink-index.asciidoc[]
+
+include::indices/split-index.asciidoc[]
 
 include::indices/rollover-index.asciidoc[]
 
@@ -96,8 +93,6 @@ include::indices/analyze.asciidoc[]
 
 include::indices/templates.asciidoc[]
 
-include::indices/shadow-replicas.asciidoc[]
-
 include::indices/stats.asciidoc[]
 
 include::indices/segments.asciidoc[]
@@ -113,6 +108,4 @@ include::indices/flush.asciidoc[]
 include::indices/refresh.asciidoc[]
 
 include::indices/forcemerge.asciidoc[]
-
-include::indices/upgrade.asciidoc[]
 

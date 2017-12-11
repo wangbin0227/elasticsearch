@@ -27,24 +27,23 @@ import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.test.ESTokenStreamTestCase;
 import org.elasticsearch.test.IndexSettingsModule;
 
-import static org.elasticsearch.test.ESTestCase.createAnalysisService;
+import static org.elasticsearch.test.ESTestCase.createTestAnalysis;
 
 public class StopAnalyzerTests extends ESTokenStreamTestCase {
     public void testDefaultsCompoundAnalysis() throws Exception {
         String json = "/org/elasticsearch/index/analysis/stop.json";
         Settings settings = Settings.builder()
-            .loadFromStream(json, getClass().getResourceAsStream(json))
+            .loadFromStream(json, getClass().getResourceAsStream(json), false)
                 .put(Environment.PATH_HOME_SETTING.getKey(), createTempDir().toString())
                 .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
                 .build();
         IndexSettings idxSettings = IndexSettingsModule.newIndexSettings("index", settings);
-        AnalysisService analysisService = createAnalysisService(idxSettings, settings);
-
-        NamedAnalyzer analyzer1 = analysisService.analyzer("analyzer1");
+        IndexAnalyzers indexAnalyzers = createTestAnalysis(idxSettings, settings).indexAnalyzers;
+        NamedAnalyzer analyzer1 = indexAnalyzers.get("analyzer1");
 
         assertTokenStreamContents(analyzer1.tokenStream("test", "to be or not to be"), new String[0]);
 
-        NamedAnalyzer analyzer2 = analysisService.analyzer("analyzer2");
+        NamedAnalyzer analyzer2 = indexAnalyzers.get("analyzer2");
 
         assertTokenStreamContents(analyzer2.tokenStream("test", "to be or not to be"), new String[0]);
     }

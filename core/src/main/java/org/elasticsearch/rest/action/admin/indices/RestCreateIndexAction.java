@@ -21,42 +21,39 @@ package org.elasticsearch.rest.action.admin.indices;
 
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
-import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.action.support.ActiveShardCount;
-import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.BaseRestHandler;
-import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.AcknowledgedRestListener;
 
 import java.io.IOException;
 
-/**
- *
- */
 public class RestCreateIndexAction extends BaseRestHandler {
-
-    @Inject
     public RestCreateIndexAction(Settings settings, RestController controller) {
         super(settings);
         controller.registerHandler(RestRequest.Method.PUT, "/{index}", this);
     }
 
-    @SuppressWarnings({"unchecked"})
     @Override
-    public void handleRequest(final RestRequest request, final RestChannel channel, final NodeClient client) {
+    public String getName() {
+        return "create_index_action";
+    }
+
+    @Override
+    public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         CreateIndexRequest createIndexRequest = new CreateIndexRequest(request.param("index"));
         if (request.hasContent()) {
-            createIndexRequest.source(request.content());
+            createIndexRequest.source(request.content(), request.getXContentType());
         }
         createIndexRequest.updateAllTypes(request.paramAsBoolean("update_all_types", false));
         createIndexRequest.timeout(request.paramAsTime("timeout", createIndexRequest.timeout()));
         createIndexRequest.masterNodeTimeout(request.paramAsTime("master_timeout", createIndexRequest.masterNodeTimeout()));
         createIndexRequest.waitForActiveShards(ActiveShardCount.parseString(request.param("wait_for_active_shards")));
-        client.admin().indices().create(createIndexRequest, new AcknowledgedRestListener<CreateIndexResponse>(channel) {
+        return channel -> client.admin().indices().create(createIndexRequest, new AcknowledgedRestListener<CreateIndexResponse>(channel) {
             @Override
             public void addCustomFields(XContentBuilder builder, CreateIndexResponse response) throws IOException {
                 response.addCustomFields(builder);

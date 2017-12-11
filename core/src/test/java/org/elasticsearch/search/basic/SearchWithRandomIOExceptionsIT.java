@@ -31,6 +31,7 @@ import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.search.sort.SortOrder;
@@ -89,17 +90,17 @@ public class SearchWithRandomIOExceptionsIT extends ESIntegTestCase {
         if (createIndexWithoutErrors) {
             Settings.Builder settings = Settings.builder()
                 .put("index.number_of_replicas", numberOfReplicas());
-            logger.info("creating index: [test] using settings: [{}]", settings.build().getAsMap());
+            logger.info("creating index: [test] using settings: [{}]", settings.build());
             client().admin().indices().prepareCreate("test")
                 .setSettings(settings)
-                .addMapping("type", mapping).execute().actionGet();
+                .addMapping("type", mapping, XContentType.JSON).execute().actionGet();
             numInitialDocs = between(10, 100);
             ensureGreen();
             for (int i = 0; i < numInitialDocs; i++) {
                 client().prepareIndex("test", "type", "init" + i).setSource("test", "init").get();
             }
             client().admin().indices().prepareRefresh("test").execute().get();
-            client().admin().indices().prepareFlush("test").setWaitIfOngoing(true).execute().get();
+            client().admin().indices().prepareFlush("test").execute().get();
             client().admin().indices().prepareClose("test").execute().get();
             client().admin().indices().prepareUpdateSettings("test").setSettings(Settings.builder()
                 .put(MockFSDirectoryService.RANDOM_IO_EXCEPTION_RATE_SETTING.getKey(), exceptionRate)
@@ -111,10 +112,10 @@ public class SearchWithRandomIOExceptionsIT extends ESIntegTestCase {
                 .put(MockFSIndexStore.INDEX_CHECK_INDEX_ON_CLOSE_SETTING.getKey(), false)
                 .put(MockFSDirectoryService.RANDOM_IO_EXCEPTION_RATE_SETTING.getKey(), exceptionRate)
                 .put(MockFSDirectoryService.RANDOM_IO_EXCEPTION_RATE_ON_OPEN_SETTING.getKey(), exceptionOnOpenRate); // we cannot expect that the index will be valid
-            logger.info("creating index: [test] using settings: [{}]", settings.build().getAsMap());
+            logger.info("creating index: [test] using settings: [{}]", settings.build());
             client().admin().indices().prepareCreate("test")
                 .setSettings(settings)
-                .addMapping("type", mapping).execute().actionGet();
+                .addMapping("type", mapping, XContentType.JSON).execute().actionGet();
         }
         ClusterHealthResponse clusterHealthResponse = client().admin().cluster()
             .health(Requests.clusterHealthRequest().waitForYellowStatus().timeout(TimeValue.timeValueSeconds(5))).get(); // it's OK to timeout here

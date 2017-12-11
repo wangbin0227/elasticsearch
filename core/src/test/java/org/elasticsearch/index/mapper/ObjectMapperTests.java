@@ -19,17 +19,27 @@
 
 package org.elasticsearch.index.mapper;
 
+import org.elasticsearch.Version;
+import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.compress.CompressedXContent;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.mapper.DocumentMapper;
+import org.elasticsearch.index.mapper.DocumentMapperParser;
 import org.elasticsearch.index.mapper.MapperParsingException;
 import org.elasticsearch.index.mapper.MapperService.MergeReason;
 import org.elasticsearch.index.mapper.ObjectMapper.Dynamic;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESSingleNodeTestCase;
+import org.elasticsearch.test.InternalSettingsPlugin;
+import org.elasticsearch.test.VersionUtils;
 
 import java.io.IOException;
+import java.util.Collection;
 
+import static com.carrotsearch.randomizedtesting.RandomizedTest.getRandom;
 import static org.hamcrest.Matchers.containsString;
 
 public class ObjectMapperTests extends ESSingleNodeTestCase {
@@ -39,7 +49,7 @@ public class ObjectMapperTests extends ESSingleNodeTestCase {
 
         DocumentMapper defaultMapper = createIndex("test").mapperService().documentMapperParser().parse("type", new CompressedXContent(mapping));
         IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> {
-            defaultMapper.parse("test", "type", "1", new BytesArray(" {\n" +
+            defaultMapper.parse(SourceToParse.source("test", "type", "1", new BytesArray(" {\n" +
                 "      \"object\": {\n" +
                 "        \"array\":[\n" +
                 "        {\n" +
@@ -51,7 +61,8 @@ public class ObjectMapperTests extends ESSingleNodeTestCase {
                 "        ]\n" +
                 "      },\n" +
                 "      \"value\":\"value\"\n" +
-                "    }"));
+                "    }"),
+                    XContentType.JSON));
         });
         assertTrue(e.getMessage(), e.getMessage().contains("different type"));
     }
@@ -171,15 +182,34 @@ public class ObjectMapperTests extends ESSingleNodeTestCase {
                 .endObject().endObject().string();
         MapperService mapperService = createIndex("test").mapperService();
         DocumentMapper mapper = mapperService.merge("type", new CompressedXContent(mapping), MergeReason.MAPPING_UPDATE, false);
-        assertNull(mapper.root().includeInAll());
         assertNull(mapper.root().dynamic());
         String update = XContentFactory.jsonBuilder().startObject()
                 .startObject("type")
-                    .field("include_in_all", false)
                     .field("dynamic", "strict")
                 .endObject().endObject().string();
         mapper = mapperService.merge("type", new CompressedXContent(update), MergeReason.MAPPING_UPDATE, false);
-        assertFalse(mapper.root().includeInAll());
         assertEquals(Dynamic.STRICT, mapper.root().dynamic());
+    }
+
+    public void testEmptyName() throws Exception {
+        String mapping = XContentFactory.jsonBuilder().startObject()
+                .startObject("")
+                    .startObject("properties")
+                        .startObject("name")
+                            .field("type", "text")
+                        .endObject()
+                    .endObject()
+                .endObject().endObject().string();
+
+        // Empty name not allowed in index created after 5.0
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> {
+            createIndex("test").mapperService().documentMapperParser().parse("", new CompressedXContent(mapping));
+        });
+        assertThat(e.getMessage(), containsString("name cannot be empty string"));
+    }
+
+    @Override
+    protected Collection<Class<? extends Plugin>> getPlugins() {
+        return pluginList(InternalSettingsPlugin.class);
     }
 }

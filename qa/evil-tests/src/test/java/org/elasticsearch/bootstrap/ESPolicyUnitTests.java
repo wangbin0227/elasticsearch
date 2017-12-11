@@ -19,9 +19,11 @@
 
 package org.elasticsearch.bootstrap;
 
+import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.FilePermission;
+import java.net.SocketPermission;
 import java.security.AllPermission;
 import java.security.CodeSource;
 import java.security.Permission;
@@ -36,13 +38,14 @@ import java.util.Collections;
  * we don't allow messing with the policy
  */
 public class ESPolicyUnitTests extends ESTestCase {
-    /** 
+    /**
      * Test policy with null codesource.
      * <p>
      * This can happen when restricting privileges with doPrivileged,
      * even though ProtectionDomain's ctor javadocs might make you think
      * that the policy won't be consulted.
      */
+    @SuppressForbidden(reason = "to create FilePermission object")
     public void testNullCodeSource() throws Exception {
         assumeTrue("test cannot run with security manager", System.getSecurityManager() == null);
         // create a policy with AllPermission
@@ -55,11 +58,12 @@ public class ESPolicyUnitTests extends ESTestCase {
         assertFalse(policy.implies(new ProtectionDomain(null, noPermissions), new FilePermission("foo", "read")));
     }
 
-    /** 
+    /**
      * test with null location
      * <p>
      * its unclear when/if this happens, see https://bugs.openjdk.java.net/browse/JDK-8129972
      */
+    @SuppressForbidden(reason = "to create FilePermission object")
     public void testNullLocation() throws Exception {
         assumeTrue("test cannot run with security manager", System.getSecurityManager() == null);
         PermissionCollection noPermissions = new Permissions();
@@ -67,4 +71,15 @@ public class ESPolicyUnitTests extends ESTestCase {
         assertFalse(policy.implies(new ProtectionDomain(new CodeSource(null, (Certificate[]) null), noPermissions),
                 new FilePermission("foo", "read")));
     }
+
+    public void testListen() {
+        assumeTrue("test cannot run with security manager", System.getSecurityManager() == null);
+        final PermissionCollection noPermissions = new Permissions();
+        final ESPolicy policy = new ESPolicy(noPermissions, Collections.emptyMap(), true);
+        assertFalse(
+            policy.implies(
+                new ProtectionDomain(ESPolicyUnitTests.class.getProtectionDomain().getCodeSource(), noPermissions),
+                new SocketPermission("localhost:" + randomFrom(0, randomIntBetween(49152, 65535)), "listen")));
+    }
+
 }

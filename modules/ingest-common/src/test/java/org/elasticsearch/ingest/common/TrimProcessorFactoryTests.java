@@ -19,34 +19,9 @@
 
 package org.elasticsearch.ingest.common;
 
-import org.elasticsearch.ElasticsearchParseException;
-import org.elasticsearch.test.ESTestCase;
-
-import java.util.HashMap;
-import java.util.Map;
-
-import static org.hamcrest.CoreMatchers.equalTo;
-
-public class TrimProcessorFactoryTests extends ESTestCase {
-
-    public void testCreate() throws Exception {
-        TrimProcessor.Factory factory = new TrimProcessor.Factory();
-        Map<String, Object> config = new HashMap<>();
-        config.put("field", "field1");
-        String processorTag = randomAsciiOfLength(10);
-        TrimProcessor uppercaseProcessor = (TrimProcessor)factory.create(null, processorTag, config);
-        assertThat(uppercaseProcessor.getTag(), equalTo(processorTag));
-        assertThat(uppercaseProcessor.getField(), equalTo("field1"));
-    }
-
-    public void testCreateMissingField() throws Exception {
-        TrimProcessor.Factory factory = new TrimProcessor.Factory();
-        Map<String, Object> config = new HashMap<>();
-        try {
-            factory.create(null, null, config);
-            fail("factory create should have failed");
-        } catch(ElasticsearchParseException e) {
-            assertThat(e.getMessage(), equalTo("[field] required property is missing"));
-        }
+public class TrimProcessorFactoryTests extends AbstractStringProcessorFactoryTestCase {
+    @Override
+    protected AbstractStringProcessor.Factory newFactory() {
+        return new TrimProcessor.Factory();
     }
 }

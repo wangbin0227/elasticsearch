@@ -33,20 +33,22 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/**
- *
- */
 public class FsBlobStore extends AbstractComponent implements BlobStore {
 
     private final Path path;
 
     private final int bufferSizeInBytes;
 
+    private final boolean readOnly;
+
     public FsBlobStore(Settings settings, Path path) throws IOException {
         super(settings);
         this.path = path;
-        Files.createDirectories(path);
-        this.bufferSizeInBytes = (int) settings.getAsBytesSize("repositories.fs.buffer_size", new ByteSizeValue(100, ByteSizeUnit.KB)).bytes();
+        this.readOnly = settings.getAsBoolean("readonly", false);
+        if (!this.readOnly) {
+            Files.createDirectories(path);
+        }
+        this.bufferSizeInBytes = (int) settings.getAsBytesSize("repositories.fs.buffer_size", new ByteSizeValue(100, ByteSizeUnit.KB)).getBytes();
     }
 
     @Override
@@ -83,7 +85,9 @@ public class FsBlobStore extends AbstractComponent implements BlobStore {
 
     private synchronized Path buildAndCreate(BlobPath path) throws IOException {
         Path f = buildPath(path);
-        Files.createDirectories(f);
+        if (!readOnly) {
+            Files.createDirectories(f);
+        }
         return f;
     }
 

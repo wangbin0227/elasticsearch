@@ -52,9 +52,6 @@ import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.search.builder.SearchSourceBuilder.searchSource;
 import static org.hamcrest.Matchers.equalTo;
 
-/**
- *
- */
 @ClusterScope(scope = Scope.SUITE, supportsDedicatedMasters = false, numDataNodes = 1)
 public class FunctionScorePluginIT extends ESIntegTestCase {
     @Override
@@ -95,7 +92,7 @@ public class FunctionScorePluginIT extends ESIntegTestCase {
         ElasticsearchAssertions.assertNoFailures(sr);
         SearchHits sh = sr.getHits();
 
-        assertThat(sh.hits().length, equalTo(2));
+        assertThat(sh.getHits().length, equalTo(2));
         assertThat(sh.getAt(0).getId(), equalTo("1"));
         assertThat(sh.getAt(1).getId(), equalTo("2"));
 

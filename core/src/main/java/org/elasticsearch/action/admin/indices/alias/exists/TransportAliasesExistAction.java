@@ -32,14 +32,12 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
-/**
- */
 public class TransportAliasesExistAction extends TransportMasterNodeReadAction<GetAliasesRequest, AliasesExistResponse> {
 
     @Inject
     public TransportAliasesExistAction(Settings settings, TransportService transportService, ClusterService clusterService,
                                        ThreadPool threadPool, ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
-        super(settings, AliasesExistAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, GetAliasesRequest::new);
+        super(settings, AliasesExistAction.NAME, transportService, clusterService, threadPool, actionFilters, GetAliasesRequest::new, indexNameExpressionResolver);
     }
 
     @Override

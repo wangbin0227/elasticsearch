@@ -21,13 +21,18 @@ package org.elasticsearch.index.mapper;
 
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.search.NormsFieldExistsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TermQuery;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.support.XContentMapValues;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.fielddata.plain.PagedBytesIndexFieldData;
+import org.elasticsearch.index.query.QueryShardContext;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -121,7 +126,7 @@ public class TextFieldMapper extends FieldMapper {
             }
             setupFieldType(context);
             return new TextFieldMapper(
-                    name, fieldType, defaultFieldType, positionIncrementGap, includeInAll,
+                    name, fieldType, defaultFieldType, positionIncrementGap,
                     context.indexSettings(), multiFieldsBuilder.build(this, context), copyTo);
         }
     }
@@ -130,9 +135,9 @@ public class TextFieldMapper extends FieldMapper {
         @Override
         public Mapper.Builder parse(String fieldName, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
             TextFieldMapper.Builder builder = new TextFieldMapper.Builder(fieldName);
-            builder.fieldType().setIndexAnalyzer(parserContext.analysisService().defaultIndexAnalyzer());
-            builder.fieldType().setSearchAnalyzer(parserContext.analysisService().defaultSearchAnalyzer());
-            builder.fieldType().setSearchQuoteAnalyzer(parserContext.analysisService().defaultSearchQuoteAnalyzer());
+            builder.fieldType().setIndexAnalyzer(parserContext.getIndexAnalyzers().getDefaultIndexAnalyzer());
+            builder.fieldType().setSearchAnalyzer(parserContext.getIndexAnalyzers().getDefaultSearchAnalyzer());
+            builder.fieldType().setSearchQuoteAnalyzer(parserContext.getIndexAnalyzers().getDefaultSearchQuoteAnalyzer());
             parseTextField(builder, fieldName, node, parserContext);
             for (Iterator<Map.Entry<String, Object>> iterator = node.entrySet().iterator(); iterator.hasNext();) {
                 Map.Entry<String, Object> entry = iterator.next();
@@ -143,10 +148,10 @@ public class TextFieldMapper extends FieldMapper {
                     builder.positionIncrementGap(newPositionIncrementGap);
                     iterator.remove();
                 } else if (propName.equals("fielddata")) {
-                    builder.fielddata(XContentMapValues.nodeBooleanValue(propNode));
+                    builder.fielddata(XContentMapValues.nodeBooleanValue(propNode, "fielddata"));
                     iterator.remove();
                 } else if (propName.equals("eager_global_ordinals")) {
-                    builder.eagerGlobalOrdinals(XContentMapValues.nodeBooleanValue(propNode));
+                    builder.eagerGlobalOrdinals(XContentMapValues.nodeBooleanValue(propNode, "eager_global_ordinals"));
                     iterator.remove();
                 } else if (propName.equals("fielddata_frequency_filter")) {
                     Map<?,?> frequencyFilter = (Map<?, ?>) propNode;
@@ -274,6 +279,15 @@ public class TextFieldMapper extends FieldMapper {
         }
 
         @Override
+        public Query existsQuery(QueryShardContext context) {
+            if (omitNorms()) {
+                return new TermQuery(new Term(FieldNamesFieldMapper.NAME, name()));
+            } else {
+                return new NormsFieldExistsQuery(name());
+            }
+        }
+
+        @Override
         public Query nullValueQuery() {
             if (nullValue() == null) {
                 return null;
@@ -282,21 +296,20 @@ public class TextFieldMapper extends FieldMapper {
         }
 
         @Override
-        public IndexFieldData.Builder fielddataBuilder() {
+        public IndexFieldData.Builder fielddataBuilder(String fullyQualifiedIndexName) {
             if (fielddata == false) {
                 throw new IllegalArgumentException("Fielddata is disabled on text fields by default. Set fielddata=true on [" + name()
                         + "] in order to load fielddata in memory by uninverting the inverted index. Note that this can however "
-                        + "use significant memory.");
+                                + "use significant memory. Alternatively use a keyword field instead.");
             }
             return new PagedBytesIndexFieldData.Builder(fielddataMinFrequency, fielddataMaxFrequency, fielddataMinSegmentSize);
         }
     }
 
-    private Boolean includeInAll;
     private int positionIncrementGap;
 
     protected TextFieldMapper(String simpleName, MappedFieldType fieldType, MappedFieldType defaultFieldType,
-                                int positionIncrementGap, Boolean includeInAll,
+                                int positionIncrementGap,
                                 Settings indexSettings, MultiFields multiFields, CopyTo copyTo) {
         super(simpleName, fieldType, defaultFieldType, indexSettings, multiFields, copyTo);
         assert fieldType.tokenized();
@@ -305,7 +318,6 @@ public class TextFieldMapper extends FieldMapper {
             throw new IllegalArgumentException("Cannot enable fielddata on a [text] field that is not indexed: [" + name() + "]");
         }
         this.positionIncrementGap = positionIncrementGap;
-        this.includeInAll = includeInAll;
     }
 
     @Override
@@ -313,17 +325,12 @@ public class TextFieldMapper extends FieldMapper {
         return (TextFieldMapper) super.clone();
     }
 
-    // pkg-private for testing
-    Boolean includeInAll() {
-        return includeInAll;
-    }
-
     public int getPositionIncrementGap() {
         return this.positionIncrementGap;
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<Field> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
         final String value;
         if (context.externalValueSet()) {
             value = context.externalValue().toString();
@@ -335,13 +342,12 @@ public class TextFieldMapper extends FieldMapper {
             return;
         }
 
-        if (context.includeInAll(includeInAll, this)) {
-            context.allEntries().addText(fieldType().name(), value, fieldType().boost());
-        }
-
         if (fieldType().indexOptions() != IndexOptions.NONE || fieldType().stored()) {
             Field field = new Field(fieldType().name(), value, fieldType());
             fields.add(field);
+            if (fieldType().omitNorms()) {
+                createFieldNamesField(context, fields);
+            }
         }
     }
 
@@ -353,7 +359,6 @@ public class TextFieldMapper extends FieldMapper {
     @Override
     protected void doMerge(Mapper mergeWith, boolean updateAllTypes) {
         super.doMerge(mergeWith, updateAllTypes);
-        this.includeInAll = ((TextFieldMapper) mergeWith).includeInAll;
     }
 
     @Override
@@ -365,12 +370,6 @@ public class TextFieldMapper extends FieldMapper {
     protected void doXContentBody(XContentBuilder builder, boolean includeDefaults, Params params) throws IOException {
         super.doXContentBody(builder, includeDefaults, params);
         doXContentAnalyzers(builder, includeDefaults);
-
-        if (includeInAll != null) {
-            builder.field("include_in_all", includeInAll);
-        } else if (includeDefaults) {
-            builder.field("include_in_all", true);
-        }
 
         if (includeDefaults || positionIncrementGap != POSITION_INCREMENT_GAP_USE_ANALYZER) {
             builder.field("position_increment_gap", positionIncrementGap);

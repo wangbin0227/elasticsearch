@@ -25,12 +25,13 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.unit.TimeValue;
 
+import java.io.Closeable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
-public interface GceInstancesService extends LifecycleComponent {
+public interface GceInstancesService {
 
     /**
      * GCE API Version: Elasticsearch/GceCloud/1.0
@@ -64,7 +65,7 @@ public interface GceInstancesService extends LifecycleComponent {
 
     /**
      * cloud.gce.max_wait: How long exponential backoff should retry before definitely failing.
-     * It's a total time since the the initial call is made.
+     * It's a total time since the initial call is made.
      * A negative value will retry indefinitely. Defaults to `-1s` (retry indefinitely).
      */
     Setting<TimeValue> MAX_WAIT_SETTING =

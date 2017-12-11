@@ -20,14 +20,14 @@
 package org.elasticsearch.action.termvectors;
 
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.CharArraySet;
+import org.apache.lucene.analysis.LowerCaseFilter;
 import org.apache.lucene.analysis.TokenFilter;
 import org.apache.lucene.analysis.Tokenizer;
-import org.apache.lucene.analysis.core.LowerCaseFilter;
 import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.payloads.TypeAsPayloadTokenFilter;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
-import org.apache.lucene.analysis.util.CharArraySet;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
@@ -66,7 +66,6 @@ import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcke
 import static org.hamcrest.Matchers.equalTo;
 
 public abstract class AbstractTermVectorsTestCase extends ESIntegTestCase {
-
     protected static class TestFieldSetting {
         public final String name;
         public final boolean storedOffset;
@@ -211,7 +210,7 @@ public abstract class AbstractTermVectorsTestCase extends ESIntegTestCase {
         Settings.Builder settings = Settings.builder()
                 .put(indexSettings())
                 .put("index.analysis.analyzer.tv_test.tokenizer", "standard")
-                .putArray("index.analysis.analyzer.tv_test.filter", "type_as_payload", "lowercase");
+                .putList("index.analysis.analyzer.tv_test.filter", "lowercase");
         assertAcked(prepareCreate(index).addMapping("type1", mappingBuilder).setSettings(settings).addAlias(new Alias(alias)));
     }
 
@@ -395,11 +394,7 @@ public abstract class AbstractTermVectorsTestCase extends ESIntegTestCase {
                         assertThat("Missing offset test failed" + failDesc, esDocsPosEnum.startOffset(), equalTo(-1));
                         assertThat("Missing offset test failed" + failDesc, esDocsPosEnum.endOffset(), equalTo(-1));
                     }
-                    if (field.storedPayloads && testConfig.requestPayloads) {
-                        assertThat("Payload test failed" + failDesc, luceneDocsPosEnum.getPayload(), equalTo(esDocsPosEnum.getPayload()));
-                    } else {
-                        assertThat("Missing payload test failed" + failDesc, esDocsPosEnum.getPayload(), equalTo(null));
-                    }
+                    assertNull("Missing payload test failed" + failDesc, esDocsPosEnum.getPayload());
                 }
             }
             assertNull("Es returned terms are done but lucene isn't", luceneTermEnum.next());

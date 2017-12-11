@@ -38,15 +38,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- *
- */
 public class TransportGetIndexTemplatesAction extends TransportMasterNodeReadAction<GetIndexTemplatesRequest, GetIndexTemplatesResponse> {
 
     @Inject
     public TransportGetIndexTemplatesAction(Settings settings, TransportService transportService, ClusterService clusterService,
                                             ThreadPool threadPool, ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
-        super(settings, GetIndexTemplatesAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, GetIndexTemplatesRequest::new);
+        super(settings, GetIndexTemplatesAction.NAME, transportService, clusterService, threadPool, actionFilters, GetIndexTemplatesRequest::new, indexNameExpressionResolver);
     }
 
     @Override

@@ -19,9 +19,9 @@
 
 package org.elasticsearch.bootstrap;
 
-import org.apache.lucene.index.MergePolicy;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.common.SuppressForbidden;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 
 import java.io.IOError;
@@ -65,38 +65,43 @@ class ElasticsearchUncaughtExceptionHandler implements Thread.UncaughtExceptionH
         }
     }
 
-    // visible for testing
     static boolean isFatalUncaught(Throwable e) {
-        return isFatalCause(e) || (e instanceof MergePolicy.MergeException && isFatalCause(e.getCause()));
+        return e instanceof Error;
     }
 
-    private static boolean isFatalCause(Throwable cause) {
-        return cause instanceof Error;
-    }
-
-    // visible for testing
     void onFatalUncaught(final String threadName, final Throwable t) {
-        final ESLogger logger = Loggers.getLogger(ElasticsearchUncaughtExceptionHandler.class, loggingPrefixSupplier.get());
-        logger.error("fatal error in thread [{}], exiting", t, threadName);
+        final Logger logger = Loggers.getLogger(ElasticsearchUncaughtExceptionHandler.class, loggingPrefixSupplier.get());
+        logger.error(
+            (org.apache.logging.log4j.util.Supplier<?>)
+                () -> new ParameterizedMessage("fatal error in thread [{}], exiting", threadName), t);
     }
 
-    // visible for testing
     void onNonFatalUncaught(final String threadName, final Throwable t) {
-        final ESLogger logger = Loggers.getLogger(ElasticsearchUncaughtExceptionHandler.class, loggingPrefixSupplier.get());
-        logger.warn("uncaught exception in thread [{}]", t, threadName);
+        final Logger logger = Loggers.getLogger(ElasticsearchUncaughtExceptionHandler.class, loggingPrefixSupplier.get());
+        logger.warn((org.apache.logging.log4j.util.Supplier<?>)
+            () -> new ParameterizedMessage("uncaught exception in thread [{}]", threadName), t);
     }
 
-    // visible for testing
     void halt(int status) {
-        AccessController.doPrivileged(new PrivilegedAction<Void>() {
-            @SuppressForbidden(reason = "halt")
-            @Override
-            public Void run() {
-                // we halt to prevent shutdown hooks from running
-                Runtime.getRuntime().halt(status);
-                return null;
-            }
-        });
+        AccessController.doPrivileged(new PrivilegedHaltAction(status));
+    }
+
+    static class PrivilegedHaltAction implements PrivilegedAction<Void> {
+
+        private final int status;
+
+        private PrivilegedHaltAction(final int status) {
+            this.status = status;
+        }
+
+        @SuppressForbidden(reason = "halt")
+        @Override
+        public Void run() {
+            // we halt to prevent shutdown hooks from running
+            Runtime.getRuntime().halt(status);
+            return null;
+        }
+
     }
 
 }

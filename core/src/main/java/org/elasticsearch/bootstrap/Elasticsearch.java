@@ -24,29 +24,34 @@ import joptsimple.OptionSpec;
 import joptsimple.OptionSpecBuilder;
 import joptsimple.util.PathConverter;
 import org.elasticsearch.Build;
+import org.elasticsearch.Version;
+import org.elasticsearch.cli.EnvironmentAwareCommand;
 import org.elasticsearch.cli.ExitCodes;
-import org.elasticsearch.cli.SettingCommand;
 import org.elasticsearch.cli.Terminal;
 import org.elasticsearch.cli.UserException;
+import org.elasticsearch.common.logging.LogConfigurator;
+import org.elasticsearch.env.Environment;
 import org.elasticsearch.monitor.jvm.JvmInfo;
+import org.elasticsearch.node.NodeValidationException;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.Permission;
 import java.util.Arrays;
-import java.util.Map;
 
 /**
  * This class starts elasticsearch.
  */
-class Elasticsearch extends SettingCommand {
+class Elasticsearch extends EnvironmentAwareCommand {
 
     private final OptionSpecBuilder versionOption;
     private final OptionSpecBuilder daemonizeOption;
     private final OptionSpec<Path> pidfileOption;
+    private final OptionSpecBuilder quietOption;
 
     // visible for testing
     Elasticsearch() {
-        super("starts elasticsearch");
+        super("starts elasticsearch", () -> {}); // we configure logging later so we override the base class from configuring logging
         versionOption = parser.acceptsAll(Arrays.asList("V", "version"),
             "Prints elasticsearch version information and exits");
         daemonizeOption = parser.acceptsAll(Arrays.asList("d", "daemonize"),
@@ -57,12 +62,25 @@ class Elasticsearch extends SettingCommand {
             .availableUnless(versionOption)
             .withRequiredArg()
             .withValuesConvertedBy(new PathConverter());
+        quietOption = parser.acceptsAll(Arrays.asList("q", "quiet"),
+            "Turns off standard output/error streams logging in console")
+            .availableUnless(versionOption)
+            .availableUnless(daemonizeOption);
     }
 
     /**
      * Main entry point for starting elasticsearch
      */
     public static void main(final String[] args) throws Exception {
+        // we want the JVM to think there is a security manager installed so that if internal policy decisions that would be based on the
+        // presence of a security manager or lack thereof act as if there is a security manager present (e.g., DNS cache policy)
+        System.setSecurityManager(new SecurityManager() {
+            @Override
+            public void checkPermission(Permission perm) {
+                // grant all permissions so that we can later set the security manager to the one that we want
+            }
+        });
+        LogConfigurator.registerErrorListener();
         final Elasticsearch elasticsearch = new Elasticsearch();
         int status = main(args, elasticsearch, Terminal.DEFAULT);
         if (status != ExitCodes.OK) {
@@ -75,15 +93,12 @@ class Elasticsearch extends SettingCommand {
     }
 
     @Override
-    protected void execute(Terminal terminal, OptionSet options, Map<String, String> settings) throws Exception {
+    protected void execute(Terminal terminal, OptionSet options, Environment env) throws UserException {
         if (options.nonOptionArguments().isEmpty() == false) {
             throw new UserException(ExitCodes.USAGE, "Positional arguments not allowed, found " + options.nonOptionArguments());
         }
         if (options.has(versionOption)) {
-            if (options.has(daemonizeOption) || options.has(pidfileOption)) {
-                throw new UserException(ExitCodes.USAGE, "Elasticsearch version option is mutually exclusive with any other option");
-            }
-            terminal.println("Version: " + org.elasticsearch.Version.CURRENT
+            terminal.println("Version: " + Version.displayVersion(Version.CURRENT, Build.CURRENT.isSnapshot())
                     + ", Build: " + Build.CURRENT.shortHash() + "/" + Build.CURRENT.date()
                     + ", JVM: " + JvmInfo.jvmInfo().version());
             return;
@@ -91,17 +106,23 @@ class Elasticsearch extends SettingCommand {
 
         final boolean daemonize = options.has(daemonizeOption);
         final Path pidFile = pidfileOption.value(options);
+        final boolean quiet = options.has(quietOption);
 
-        init(daemonize, pidFile, settings);
+        try {
+            init(daemonize, pidFile, quiet, env);
+        } catch (NodeValidationException e) {
+            throw new UserException(ExitCodes.CONFIG, e.getMessage());
+        }
     }
 
-    void init(final boolean daemonize, final Path pidFile, final Map<String, String> esSettings) {
+    void init(final boolean daemonize, final Path pidFile, final boolean quiet, Environment initialEnv)
+        throws NodeValidationException, UserException {
         try {
-            Bootstrap.init(!daemonize, pidFile, esSettings);
-        } catch (final Throwable t) {
+            Bootstrap.init(!daemonize, pidFile, quiet, initialEnv);
+        } catch (BootstrapException | RuntimeException e) {
             // format exceptions to the console in a special way
             // to avoid 2MB stacktraces from guice, etc.
-            throw new StartupException(t);
+            throw new StartupException(e);
         }
     }
 
@@ -111,9 +132,11 @@ class Elasticsearch extends SettingCommand {
      *
      * http://commons.apache.org/proper/commons-daemon/procrun.html
      *
-     * NOTE: If this method is renamed and/or moved, make sure to update service.bat!
+     * NOTE: If this method is renamed and/or moved, make sure to
+     * update elasticsearch-service.bat!
      */
     static void close(String[] args) throws IOException {
         Bootstrap.stop();
     }
+
 }

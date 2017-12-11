@@ -22,22 +22,21 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.util.Counter;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.query.ParsedQuery;
-import org.elasticsearch.search.fetch.StoredFieldsContext;
 import org.elasticsearch.search.aggregations.SearchContextAggregations;
+import org.elasticsearch.search.collapse.CollapseContext;
 import org.elasticsearch.search.fetch.FetchSearchResult;
+import org.elasticsearch.search.fetch.StoredFieldsContext;
+import org.elasticsearch.search.fetch.subphase.DocValueFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
 import org.elasticsearch.search.fetch.subphase.ScriptFieldsContext;
 import org.elasticsearch.search.fetch.subphase.highlight.SearchContextHighlight;
-import org.elasticsearch.search.lookup.SearchLookup;
 import org.elasticsearch.search.query.QuerySearchResult;
-import org.elasticsearch.search.rescore.RescoreSearchContext;
+import org.elasticsearch.search.rescore.RescoreContext;
 import org.elasticsearch.search.sort.SortAndFormats;
 import org.elasticsearch.search.suggest.SuggestionSearchContext;
 
 import java.util.List;
 
-/**
- */
 public class SubSearchContext extends FilteredSearchContext {
 
     // By default return 3 hits per bucket. A higher default would make the response really large by default, since
@@ -60,6 +59,7 @@ public class SubSearchContext extends FilteredSearchContext {
     private StoredFieldsContext storedFields;
     private ScriptFieldsContext scriptFields;
     private FetchSourceContext fetchSourceContext;
+    private DocValueFieldsContext docValueFieldsContext;
     private SearchContextHighlight highlight;
 
     private boolean explain;
@@ -77,17 +77,12 @@ public class SubSearchContext extends FilteredSearchContext {
     }
 
     @Override
-    public void preProcess() {
+    public void preProcess(boolean rewrite) {
     }
 
     @Override
-    public Query searchFilter(String[] types) {
+    public Query buildFilteredQuery(Query query) {
         throw new UnsupportedOperationException("this context should be read only");
-    }
-
-    @Override
-    public SearchContext queryBoost(float queryBoost) {
-        throw new UnsupportedOperationException("Not supported");
     }
 
     @Override
@@ -116,7 +111,7 @@ public class SubSearchContext extends FilteredSearchContext {
     }
 
     @Override
-    public void addRescore(RescoreSearchContext rescore) {
+    public void addRescore(RescoreContext rescore) {
         throw new UnsupportedOperationException("Not supported");
     }
 
@@ -151,6 +146,17 @@ public class SubSearchContext extends FilteredSearchContext {
     @Override
     public SearchContext fetchSourceContext(FetchSourceContext fetchSourceContext) {
         this.fetchSourceContext = fetchSourceContext;
+        return this;
+    }
+
+    @Override
+    public DocValueFieldsContext docValueFieldsContext() {
+        return docValueFieldsContext;
+    }
+
+    @Override
+    public SearchContext docValueFieldsContext(DocValueFieldsContext docValueFieldsContext) {
+        this.docValueFieldsContext = docValueFieldsContext;
         return this;
     }
 
@@ -312,6 +318,11 @@ public class SubSearchContext extends FilteredSearchContext {
     }
 
     @Override
+    public CollapseContext collapse() {
+        return null;
+    }
+
+    @Override
     public void accessed(long accessTime) {
         throw new UnsupportedOperationException("Not supported");
     }
@@ -329,16 +340,6 @@ public class SubSearchContext extends FilteredSearchContext {
     @Override
     public FetchSearchResult fetchResult() {
         return fetchSearchResult;
-    }
-
-    private SearchLookup searchLookup;
-
-    @Override
-    public SearchLookup lookup() {
-        if (searchLookup == null) {
-            searchLookup = new SearchLookup(mapperService(), fieldData(), request().types());
-        }
-        return searchLookup;
     }
 
     @Override
